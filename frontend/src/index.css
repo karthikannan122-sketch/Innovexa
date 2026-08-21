@@ -1,0 +1,549 @@
+/* ==========================================================================
+   INNOVEXA — PREMIUM EDITORIAL INNOVATION PLATFORM
+   Design System & Tokens (Editorial Luxury + Soft Futuristic + Startup System)
+   ========================================================================== */
+
+:root {
+  /* 1. Core Color System — Surfaces */
+  --bg-ivory: #F6F3EE;           /* Warm Soft Ivory (Primary Canvas) */
+  --bg-cream: #EEE9E1;           /* Soft Cream (Secondary Background) */
+  --bg-white: #FCFBF8;           /* Warm White (Card Surface) */
+  --bg-dark: #20212A;            /* Dark Surface (Modern Dark Sidebar & Feature Panels) */
+  --bg-dark-secondary: #2B2D38;  /* Dark Secondary */
+  --bg-dark-hover: #343744;      /* Dark Hover State */
+
+  /* Legacy aliases for backward compatibility */
+  --paper-base: var(--bg-ivory);
+  --paper-subtle: var(--bg-cream);
+  --paper-raised: var(--bg-white);
+  --paper-sunken: #E4DED3;
+
+  /* 2. Text System */
+  --text-primary: #24242B;       /* Deep Charcoal */
+  --text-secondary: #6D6B73;     /* Muted Slate */
+  --text-muted: #94929C;         /* Faint Metadata */
+  --text-inverse: #FCFBF8;       /* Warm White on Dark */
+  --text-inverse-muted: #A3A1AC; /* Muted on Dark */
+
+  /* Legacy text aliases */
+  --ink-charcoal: var(--text-primary);
+  --ink-body: var(--text-primary);
+  --slate-muted: var(--text-secondary);
+  --slate-faint: var(--text-muted);
+
+  /* 3. Hairline Rules & Crisp Borders */
+  --border-hairline: rgba(36, 36, 43, 0.08);
+  --border-subtle: rgba(36, 36, 43, 0.12);
+  --border-medium: rgba(36, 36, 43, 0.20);
+  --border-strong: #24242B;
+  --border-dark: rgba(255, 255, 255, 0.10);
+  --border-dark-strong: rgba(255, 255, 255, 0.20);
+
+  /* Legacy border aliases */
+  --border-paper: var(--border-subtle);
+
+  /* 4. Modular Accent Palette */
+  --coral: #E76F82;              /* Primary Accent - Coral Rose */
+  --coral-light: #F3A3AD;        /* Light Coral */
+  --coral-glow: rgba(231, 111, 130, 0.25);
+  
+  --periwinkle: #7186D8;         /* Product / Technology - Soft Periwinkle Blue */
+  --lavender: #9B8AE5;           /* Idea - Soft Lavender */
+  --teal: #58B8AD;               /* Startup - Fresh Teal */
+  --apricot: #F0A45D;            /* Community - Warm Apricot */
+  --rose-pink: #D86B9A;          /* Insights - Rose Pink */
+  --green: #69B89A;              /* Success / Validated - Soft Green */
+  --amber: #E9B45B;              /* Warning - Warm Amber */
+  --red: #D96666;                /* Error - Muted Red */
+
+  /* Category in-system maps */
+  --ink-ai: var(--lavender);
+  --ink-ai-light: #F5F2FC;
+  --ink-devtools: var(--periwinkle);
+  --ink-devtools-light: #F0F3FC;
+  --ink-health: var(--teal);
+  --ink-health-light: #EEF8F6;
+  --ink-environment: var(--green);
+  --ink-environment-light: #EFF7F3;
+  --ink-edu: var(--apricot);
+  --ink-edu-light: #FDF6EE;
+  --ink-fintech: var(--periwinkle);
+  --ink-fintech-light: #F0F3FC;
+  --ink-saas: var(--rose-pink);
+  --ink-saas-light: #FAF0F5;
+  --ink-security: var(--coral);
+  --ink-security-light: #FDF1F3;
+
+  /* 5. Typography Three-Engine System */
+  --font-editorial: 'Playfair Display', 'Bodoni Moda', Georgia, serif;
+  --font-ui: 'Sora', 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Space Mono', 'Courier New', monospace;
+  
+  /* Legacy font aliases */
+  --font-serif-body: var(--font-editorial);
+  --font-sans: var(--font-ui);
+  --font-display: var(--font-editorial);
+
+  /* 6. Shadows & Elevations */
+  --shadow-sm: 0 1px 3px rgba(36, 36, 43, 0.04), 0 1px 2px rgba(36, 36, 43, 0.02);
+  --shadow-md: 0 4px 16px rgba(36, 36, 43, 0.06), 0 1px 3px rgba(36, 36, 43, 0.03);
+  --shadow-lg: 0 12px 32px rgba(36, 36, 43, 0.08), 0 2px 6px rgba(36, 36, 43, 0.04);
+  --shadow-dark: 0 16px 40px rgba(0, 0, 0, 0.28);
+  --shadow-modal: 0 24px 64px rgba(36, 36, 43, 0.18), 0 4px 16px rgba(36, 36, 43, 0.08);
+
+  /* Legacy shadow aliases */
+  --shadow-paper-flat: var(--shadow-sm);
+  --shadow-paper: var(--shadow-md);
+  --shadow-paper-hover: var(--shadow-lg);
+
+  /* 7. Radii */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  /* 8. Layout Dimensions */
+  --topbar-height: 64px;
+  --sidebar-width: 260px;
+}
+
+/* ==========================================================================
+   Base Reset & Defaults
+   ========================================================================== */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  background-color: var(--bg-ivory);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--bg-ivory);
+  background-image: radial-gradient(rgba(36, 36, 43, 0.035) 1px, transparent 0);
+  background-size: 24px 24px;
+  min-height: 100vh;
+  line-height: 1.6;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  overflow-x: hidden;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ==========================================================================
+   Typography System
+   Formula: Space Mono Technical Label -> Massive Editorial Serif -> Sora UI
+   ========================================================================== */
+
+h1, h2, h3, h4, h5, h6, .editorial-heading {
+  font-family: var(--font-editorial);
+  color: var(--text-primary);
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.025em;
+}
+
+.editorial-hero {
+  font-family: var(--font-editorial);
+  font-size: clamp(3.4rem, 7vw, 5.8rem);
+  font-weight: 800;
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+  color: var(--text-primary);
+}
+
+.editorial-serif-italic {
+  font-family: var(--font-editorial);
+  font-style: italic;
+  font-weight: 400;
+}
+
+.editorial-sans-bold {
+  font-family: var(--font-ui);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.editorial-lead {
+  font-family: var(--font-editorial);
+  font-size: 1.35rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.editorial-pullquote {
+  font-family: var(--font-editorial);
+  font-size: 1.85rem;
+  line-height: 1.3;
+  font-style: italic;
+  color: var(--text-primary);
+  position: relative;
+  padding-left: 1.75rem;
+  border-left: 3.5px solid var(--coral);
+  margin: 1.75rem 0;
+}
+
+.editorial-index, .editorial-mono-label, .label-mono {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* ==========================================================================
+   Layout Containers & Grids
+   ========================================================================== */
+
+.workspace-container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  width: 100%;
+}
+
+.editorial-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.75rem;
+}
+
+/* ==========================================================================
+   Cards & Surfaces
+   ========================================================================== */
+
+.editorial-card, .ledger-card {
+  background-color: var(--bg-white);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease;
+  position: relative;
+}
+
+.editorial-card:hover, .ledger-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+  border-color: var(--border-medium);
+}
+
+.editorial-card-dark {
+  background-color: var(--bg-dark);
+  color: var(--text-inverse);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-dark);
+  position: relative;
+  overflow: hidden;
+}
+
+.editorial-card-dark h1,
+.editorial-card-dark h2,
+.editorial-card-dark h3,
+.editorial-card-dark strong {
+  color: var(--text-inverse);
+}
+
+/* ==========================================================================
+   Buttons & Interactive Elements
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.65rem 1.35rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-decoration: none;
+  line-height: 1.2;
+  user-select: none;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn-primary {
+  background-color: var(--text-primary);
+  color: var(--bg-ivory);
+  border-color: var(--text-primary);
+}
+
+.btn-primary:hover {
+  background-color: #15151A;
+  box-shadow: var(--shadow-md);
+}
+
+.btn-coral {
+  background-color: var(--coral);
+  color: #FFFFFF;
+  border-color: var(--coral);
+}
+
+.btn-coral:hover {
+  background-color: #E25B71;
+  box-shadow: 0 4px 16px var(--coral-glow);
+}
+
+.btn-secondary {
+  background-color: var(--bg-white);
+  color: var(--text-primary);
+  border-color: var(--border-medium);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-secondary:hover {
+  background-color: var(--bg-cream);
+  border-color: var(--text-primary);
+}
+
+.btn-outline {
+  background-color: transparent;
+  color: var(--text-primary);
+  border-color: var(--border-medium);
+}
+
+.btn-outline:hover {
+  background-color: var(--bg-cream);
+}
+
+.btn-ghost {
+  background-color: transparent;
+  color: var(--text-secondary);
+  border-color: transparent;
+}
+
+.btn-ghost:hover {
+  background-color: rgba(36, 36, 43, 0.05);
+  color: var(--text-primary);
+}
+
+.btn-sm {
+  font-size: 0.78rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: var(--radius-xs);
+}
+
+.btn-lg {
+  font-size: 1.05rem;
+  padding: 0.95rem 2rem;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+}
+
+/* ==========================================================================
+   Form Controls
+   ========================================================================== */
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 1.35rem;
+}
+
+.form-label {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.form-input, .form-textarea, .form-select, input[type="text"], input[type="email"], input[type="password"], textarea, select {
+  font-family: var(--font-ui);
+  font-size: 0.94rem;
+  color: var(--text-primary);
+  background-color: var(--bg-white);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  transition: all 0.2s ease;
+  outline: none;
+  width: 100%;
+}
+
+.form-input:focus, .form-textarea:focus, .form-select:focus, input:focus, textarea:focus, select:focus {
+  border-color: var(--coral);
+  box-shadow: 0 0 0 3px var(--coral-glow);
+  background-color: #FFFFFF;
+}
+
+.form-textarea, textarea {
+  min-height: 110px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Category Inks & Tags
+   ========================================================================== */
+
+.category-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tag-ink-ai { background-color: #F5F2FC; color: #7B68D6; border: 1px solid rgba(155, 138, 229, 0.3); }
+.tag-ink-devtools { background-color: #F0F3FC; color: #5B72CA; border: 1px solid rgba(113, 134, 216, 0.3); }
+.tag-ink-health { background-color: #EEF8F6; color: #3F9E93; border: 1px solid rgba(88, 184, 173, 0.3); }
+.tag-ink-environment { background-color: #EFF7F3; color: #4B9E7F; border: 1px solid rgba(105, 184, 154, 0.3); }
+.tag-ink-edu { background-color: #FDF6EE; color: #D48439; border: 1px solid rgba(240, 164, 93, 0.3); }
+.tag-ink-fintech { background-color: #F0F3FC; color: #5B72CA; border: 1px solid rgba(113, 134, 216, 0.3); }
+.tag-ink-saas { background-color: #FAF0F5; color: #BF4E80; border: 1px solid rgba(216, 107, 154, 0.3); }
+.tag-ink-security { background-color: #FDF1F3; color: #D1556B; border: 1px solid rgba(231, 111, 130, 0.3); }
+
+/* ==========================================================================
+   Filter Pills & Chips
+   ========================================================================== */
+
+.filter-chip-group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.filter-chip {
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.45rem 1rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-medium);
+  background-color: var(--bg-white);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.filter-chip.active {
+  background-color: var(--text-primary);
+  color: var(--bg-ivory);
+  border-color: var(--text-primary);
+}
+
+/* ==========================================================================
+   Status Badges & Progress Bars
+   ========================================================================== */
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background-color: rgba(36, 36, 43, 0.08);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-track-dark {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ==========================================================================
+   Command Palette & Modal Backdrop
+   ========================================================================== */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(32, 33, 42, 0.65);
+  backdrop-filter: blur(8px);
+  z-index: 9990;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  animation: fadeIn 0.2s ease;
+}
+
+.command-dialog {
+  background-color: var(--bg-white);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 620px;
+  overflow: hidden;
+  animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalPop {
+  from { opacity: 0; transform: scale(0.96) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ==========================================================================
+   Responsive Scaling
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  .workspace-container {
+    padding: 0 1.25rem;
+  }
+
+  .editorial-hero {
+    font-size: 2.8rem;
+  }
+
+  .editorial-pullquote {
+    font-size: 1.4rem;
+  }
+}
