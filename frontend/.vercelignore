@@ -1,0 +1,16 @@
+node_modules/
+.env.local
+scratch/
+scripts/
+test_*.js
+test_*.mjs
+inspect_*.js
+inspect_*.mjs
+probe_*.mjs
+run_live_audit.mjs
+audit_*.js
+check_*.js
+check_*.mjs
+demo_*.js
+live_trial_*.js
+verify_*.mjs

@@ -29,27 +29,33 @@ def now_utc_iso() -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Autonomous Server-Side 24-Hour Discovery Ingestion Scheduler with clean lifecycle management."""
-    async def schedule_worker():
-        while True:
-            try:
-                logger.info("[Scheduler] Executing scheduled innovation discovery cycle...")
-                await asyncio.to_thread(discovery_engine.run_ingestion_pipeline)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[Scheduler] Ingestion worker error: {e}")
-            try:
-                await asyncio.sleep(86400)
-            except asyncio.CancelledError:
-                break
+    is_serverless = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+    worker_task = None
+    if not is_serverless:
+        async def schedule_worker():
+            while True:
+                try:
+                    logger.info("[Scheduler] Executing scheduled innovation discovery cycle...")
+                    await asyncio.to_thread(discovery_engine.run_ingestion_pipeline)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"[Scheduler] Ingestion worker error: {e}")
+                try:
+                    await asyncio.sleep(86400)
+                except asyncio.CancelledError:
+                    break
 
-    worker_task = asyncio.create_task(schedule_worker())
+        worker_task = asyncio.create_task(schedule_worker())
+
     yield
-    worker_task.cancel()
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        pass
+
+    if worker_task:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(
     title="INNOVEXA API",
@@ -459,6 +465,30 @@ def get_current_user_id(authorization: Optional[str] = Header(None), x_user_id: 
             return token
     # Default fallback for testing
     return "usr_karthick_founder"
+
+# -----------------------------------------------------------------------------
+# 0. ROOT & HEALTH CHECK ENDPOINTS (FOR VERCEL / MONITORING)
+# -----------------------------------------------------------------------------
+@app.get("/")
+def api_root():
+    return {
+        "service": "INNOVEXA API",
+        "status": "online",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health",
+        "api_v1": "/api/v1"
+    }
+
+@app.get("/health")
+@app.get("/api/v1/health")
+def api_health():
+    return {
+        "status": "healthy",
+        "timestamp": now_utc_iso(),
+        "service": "INNOVEXA FastAPI Backend",
+        "version": "1.0.0"
+    }
 
 # -----------------------------------------------------------------------------
 # 1. AUTHENTICATION ENDPOINTS
