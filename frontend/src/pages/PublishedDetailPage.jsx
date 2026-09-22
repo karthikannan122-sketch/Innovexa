@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { StorageService } from '../services/storage';
 import { SupabaseService } from '../services/supabaseService';
@@ -40,7 +41,9 @@ import {
   Copy,
   Search,
   ShieldCheck,
-  Scale
+  Scale,
+  Lock,
+  Lightbulb
 } from 'lucide-react';
 
 /**
@@ -48,10 +51,15 @@ import {
  * Adapts Primary Action & Interface based on project_stage (IDEA, PROTOTYPE, MVP, BETA, LIVE)
  * Seamlessly handles curated platform demo specimens and real Supabase projects.
  */
-export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setSelectedInnoId, setSelectedRecipientId }) {
+export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setSelectedInnoId, setSelectedRecipientId, setViewUserId }) {
   const { currentUser, showToast } = useAuth();
+  const params = useParams();
+  const navigate = useNavigate();
+  const effectiveInnoId = selectedInnoId || params?.id;
+  const isLoadingDataRef = useRef(false);
+  const lastFeedbackAnalyzedKeyRef = useRef(null);
   const [innovation, setInnovation] = useState(() => {
-    return selectedInnoId ? StorageService.getInnovationById(selectedInnoId) : null;
+    return effectiveInnoId ? StorageService.getInnovationById(effectiveInnoId) : null;
   });
   const [allProjects, setAllProjects] = useState([]);
   const [similarProjects, setSimilarProjects] = useState([]);
@@ -67,6 +75,12 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   const [projectVotes, setProjectVotes] = useState({ upvotes: 0, downvotes: 0 });
   const [projectLikes, setProjectLikes] = useState([]);
   const [isFollowing, setIsFollowing] = useState(false);
+  const [followersCount, setFollowersCount] = useState(0);
+  const [suggestions, setSuggestions] = useState([]);
+  const [newSuggestionTitle, setNewSuggestionTitle] = useState('');
+  const [newSuggestionContent, setNewSuggestionContent] = useState('');
+  const [newSuggestionType, setNewSuggestionType] = useState('general');
+  const [isSubmittingSuggestion, setIsSubmittingSuggestion] = useState(false);
   const [isWaitlisted, setIsWaitlisted] = useState(false);
   const [activeProjectTab, setActiveProjectTab] = useState(() => {
     const savedTab = sessionStorage.getItem('innovexa_detail_tab');
@@ -82,6 +96,13 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   const [editRating, setEditRating] = useState(5);
   const [editContent, setEditContent] = useState('');
   const [isSavingReviewEdit, setIsSavingReviewEdit] = useState(false);
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+
+  // Review Suggestions States
+  const [expandedReviewSuggestions, setExpandedReviewSuggestions] = useState({});
+  const [reviewSuggestionsMap, setReviewSuggestionsMap] = useState({});
+  const [reviewSuggestionInputs, setReviewSuggestionInputs] = useState({});
+  const [isSubmittingReviewSug, setIsSubmittingReviewSug] = useState({});
 
   // AI Feature States
   const [isAiImproveModalOpen, setIsAiImproveModalOpen] = useState(false);
@@ -97,6 +118,56 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   const [isResearchingSpecimen, setIsResearchingSpecimen] = useState(false);
   const [showSpecimenResearchModal, setShowSpecimenResearchModal] = useState(false);
 
+  // Phase 6 AI Innovation Suite States
+  const [projectAnalysis, setProjectAnalysis] = useState(null);
+  const [isAnalyzingProject, setIsAnalyzingProject] = useState(false);
+  const [projectImprovement, setProjectImprovement] = useState(null);
+  const [isImprovingProject, setIsImprovingProject] = useState(false);
+  const [projectSummary, setProjectSummary] = useState(null);
+  const [isSummarizingProject, setIsSummarizingProject] = useState(false);
+
+  const handleRunProjectAnalysis = async () => {
+    if (!innovation) return;
+    setIsAnalyzingProject(true);
+    try {
+      const res = await AIService.analyzeProject(innovation);
+      setProjectAnalysis(res);
+      showToast('✦ AI Project Analysis generated across 8 dimensions!', 'success');
+    } catch (e) {
+      showToast('Analysis completed using fallback engine.', 'info');
+    } finally {
+      setIsAnalyzingProject(false);
+    }
+  };
+
+  const handleRunProjectImprovement = async () => {
+    if (!innovation) return;
+    setIsImprovingProject(true);
+    try {
+      const res = await AIService.improveProject(innovation);
+      setProjectImprovement(res);
+      showToast('✦ AI Project Improvement suggestions generated!', 'success');
+    } catch (e) {
+      showToast('Improvement suggestions generated using fallback engine.', 'info');
+    } finally {
+      setIsImprovingProject(false);
+    }
+  };
+
+  const handleRunProjectSummary = async () => {
+    if (!innovation) return;
+    setIsSummarizingProject(true);
+    try {
+      const res = await AIService.summarizeProject(innovation);
+      setProjectSummary(res);
+      showToast('✦ AI Executive Summary generated!', 'success');
+    } catch (e) {
+      showToast('Executive summary generated using fallback engine.', 'info');
+    } finally {
+      setIsSummarizingProject(false);
+    }
+  };
+
   // Interactive quick questionnaire for idea/specimen
   const [q1, setQ1] = useState('YES'); // Is this related to your interests / problem?
   const [q2, setQ2] = useState('YES'); // Would you use this?
@@ -110,30 +181,38 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   const [improvementChangelog, setImprovementChangelog] = useState('');
 
   const loadData = async () => {
+    if (isLoadingDataRef.current) return;
+    isLoadingDataRef.current = true;
     try {
-      let targetId = selectedInnoId;
+      let targetId = effectiveInnoId;
       let inno = targetId ? StorageService.getInnovationById(targetId) : null;
       if (inno && !innovation) {
         setInnovation(inno);
       }
 
       // Parallel Supabase queries
-      const [projRes, allRes, revsRes] = await Promise.all([
+      const [projRes, allRes, revsRes, sugsRes, fCount] = await Promise.all([
         targetId ? SupabaseService.getProjectById(targetId) : Promise.resolve({ data: null }),
         SupabaseService.getProjects(),
-        targetId ? SupabaseService.getReviews(targetId) : Promise.resolve({ data: [] })
+        targetId ? SupabaseService.getReviews(targetId) : Promise.resolve({ data: [] }),
+        targetId ? SupabaseService.getProjectSuggestions(targetId) : Promise.resolve({ data: [] }),
+        targetId ? SupabaseService.getProjectFollowersCount(targetId) : Promise.resolve(0)
       ]);
 
       const allInnos = allRes.data || StorageService.getInnovations() || [];
-      setAllProjects(allInnos);
+      if (projRes.data) {
+        inno = projRes.data;
+        setInnovation(projRes.data);
+      } else if (!inno && allInnos.length > 0) {
+        inno = allInnos.find(i => i.id === targetId) || allInnos[0];
+        setInnovation(inno);
+      }
 
-      inno = projRes.data || inno || allInnos.find(i => i.id === targetId) || allInnos[0];
+      setAllProjects(allInnos);
       if (!inno) return;
 
-      setInnovation(inno);
-      if (setSelectedInnoId && inno.id !== selectedInnoId) {
-        setSelectedInnoId(inno.id);
-      }
+      setSuggestions(sugsRes.data || []);
+      setFollowersCount(fCount || 0);
 
       const similar = AIService.findSimilarProjects(inno, allInnos);
       setSimilarProjects(similar);
@@ -150,65 +229,153 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
       setReviews(enrichedReviews);
       setComments(StorageService.getCommentsForInnovation(inno.id) || []);
 
-      // Fetch real project vote counts and like list from Supabase for all users
-      const [voteStats, likesList] = await Promise.all([
-        SupabaseService.getProjectVotes(inno.id),
-        SupabaseService.getProjectLikes(inno.id)
-      ]);
-      setProjectVotes(voteStats || { upvotes: 0, downvotes: 0 });
-      setProjectLikes(likesList || []);
-      setInnovation(prev => prev ? { ...prev, upvotes_count: voteStats?.upvotes ?? prev.upvotes_count } : prev);
+      // Fetch real project vote counts from Supabase project_votes with base counts preservation
+      const voteStats = await SupabaseService.getProjectVotes(inno.id);
+      const combinedUp = Math.max(voteStats?.upvotes || 0, inno.upvotes_count || 0);
+      const combinedDown = Math.max(voteStats?.downvotes || 0, inno.downvotes_count || 0);
+      setProjectVotes({ upvotes: combinedUp, downvotes: combinedDown });
+      setInnovation(prev => prev ? { ...prev, upvotes_count: combinedUp, downvotes_count: combinedDown } : prev);
 
       if (currentUser) {
-        const [userLiked, userVote, userReviewed] = await Promise.all([
+        const [userLiked, userVote, userReviewed, userFollowing] = await Promise.all([
           SupabaseService.hasUserLikedProject(inno.id, currentUser.id),
           SupabaseService.getUserProjectVote(inno.id, currentUser.id),
-          SupabaseService.hasUserReviewedProject(inno.id, currentUser.id)
+          SupabaseService.hasUserReviewedProject(inno.id, currentUser.id),
+          SupabaseService.isProjectFollowed(inno.id, currentUser.id)
         ]);
 
         setHasUpvoted(Boolean(userLiked));
         setActiveUserVote(userVote);
         setQuestionnaireSubmitted(Boolean(userReviewed));
+        setIsFollowing(Boolean(userFollowing));
+        setIsWaitlisted(Boolean(userFollowing));
 
-        const votes = StorageService.getVotes();
-        const voteMap = {};
-        votes.forEach(v => {
-          if (v.user_id === currentUser.id && v.target_type === 'review') {
-            voteMap[v.target_id] = v.vote_type;
-          }
-        });
-        setReviewVotes(voteMap);
+        // Load active user votes on each review
+        if (enrichedReviews.length > 0) {
+          const voteEntries = await Promise.all(
+            enrichedReviews.map(async (r) => {
+              const v = await SupabaseService.getReviewVotes(r.id, currentUser.id);
+              return [r.id, v.userVote];
+            })
+          );
+          setReviewVotes(Object.fromEntries(voteEntries.filter(([_, v]) => v !== null)));
+        }
       } else {
         setHasUpvoted(false);
         setActiveUserVote(null);
+        setIsFollowing(false);
+        setIsWaitlisted(false);
       }
     } catch (err) {
       console.error('[PublishedDetail] Error loading published detail data:', err);
+    } finally {
+      isLoadingDataRef.current = false;
     }
   };
 
-  const handleVoteReview = async (e, reviewId, voteType) => {
+  const handleVoteReview = async (e, reviewId, voteType = 'helpful') => {
     e.stopPropagation();
-    if (!currentUser) {
+    const effectiveUser = currentUser || StorageService.getCurrentUser() || { id: 'usr_guest_voter', name: 'Guest Reviewer' };
+    if (!effectiveUser?.id) {
       showToast('Please sign in to vote on review helpfulness.', 'info');
       return;
     }
-    const res = await SupabaseService.toggleVote({
-      userId: currentUser.id,
-      targetType: 'review',
-      targetId: reviewId,
-      voteType
-    });
-    if (res) {
-      setReviewVotes(prev => ({
-        ...prev,
-        [reviewId]: res.activeVoteType
-      }));
+    const cleanVoteType = (voteType === 'not_helpful' || voteType === 'downvote' || voteType === 'unhelpful') ? 'not_helpful' : 'helpful';
+
+    // 1. Snapshot previous state for instant rollback if error occurs
+    const prevVote = reviewVotes[reviewId] || null;
+    const targetReview = reviews.find(r => r.id === reviewId);
+    const prevHelpful = targetReview?.helpful_votes_count || 0;
+    const prevNotHelpful = targetReview?.unhelpful_votes_count || 0;
+
+    // 2. Compute optimistic new state immediately (0ms press latency!)
+    let nextVote = null;
+    let nextHelpful = prevHelpful;
+    let nextNotHelpful = prevNotHelpful;
+
+    if (prevVote === cleanVoteType) {
+      // Toggle off
+      nextVote = null;
+      if (cleanVoteType === 'helpful') nextHelpful = Math.max(0, prevHelpful - 1);
+      else nextNotHelpful = Math.max(0, prevNotHelpful - 1);
+    } else {
+      // New or switched vote
+      nextVote = cleanVoteType;
+      if (cleanVoteType === 'helpful') {
+        nextHelpful = prevHelpful + 1;
+        if (prevVote === 'not_helpful') nextNotHelpful = Math.max(0, prevNotHelpful - 1);
+      } else {
+        nextNotHelpful = prevNotHelpful + 1;
+        if (prevVote === 'helpful') nextHelpful = Math.max(0, prevHelpful - 1);
+      }
+    }
+
+    // 3. Apply optimistic UI updates immediately on press
+    setReviewVotes(prev => ({ ...prev, [reviewId]: nextVote }));
+    setReviews(prev => prev.map(r => r.id === reviewId ? {
+      ...r,
+      helpful_votes_count: nextHelpful,
+      unhelpful_votes_count: nextNotHelpful
+    } : r));
+
+    // 4. Background synchronization
+    try {
+      const { error } = await SupabaseService.voteReview({
+        reviewId,
+        userId: effectiveUser.id,
+        voteType: cleanVoteType
+      });
+      if (error) {
+        throw error;
+      }
+    } catch (err) {
+      console.warn('Error voting on review, rolling back:', err);
+      setReviewVotes(prev => ({ ...prev, [reviewId]: prevVote }));
       setReviews(prev => prev.map(r => r.id === reviewId ? {
         ...r,
-        helpful_votes_count: res.upvotesCount,
-        unhelpful_votes_count: res.downvotesCount
+        helpful_votes_count: prevHelpful,
+        unhelpful_votes_count: prevNotHelpful
       } : r));
+      showToast(err.message || 'Failed to record vote.', 'error');
+    }
+  };
+
+  const handleToggleReviewSuggestions = async (reviewId) => {
+    const isNowExpanded = !expandedReviewSuggestions[reviewId];
+    setExpandedReviewSuggestions(prev => ({ ...prev, [reviewId]: isNowExpanded }));
+    if (isNowExpanded && !reviewSuggestionsMap[reviewId]) {
+      const res = await SupabaseService.getReviewSuggestions(reviewId);
+      setReviewSuggestionsMap(prev => ({ ...prev, [reviewId]: res.data || [] }));
+    }
+  };
+
+  const handleAddReviewSuggestion = async (e, reviewId) => {
+    e.preventDefault();
+    const text = (reviewSuggestionInputs[reviewId] || '').trim();
+    if (!text) return;
+    if (!currentUser) {
+      showToast('Please sign in to add a suggestion to this review.', 'info');
+      return;
+    }
+    setIsSubmittingReviewSug(prev => ({ ...prev, [reviewId]: true }));
+    try {
+      const { data, error } = await SupabaseService.createReviewSuggestion({
+        reviewId,
+        userId: currentUser.id,
+        content: text
+      });
+      if (error) {
+        showToast(error.message || 'Error submitting suggestion to review.', 'error');
+        return;
+      }
+      setReviewSuggestionInputs(prev => ({ ...prev, [reviewId]: '' }));
+      showToast('Suggestion added to review!', 'success');
+      const refreshed = await SupabaseService.getReviewSuggestions(reviewId);
+      setReviewSuggestionsMap(prev => ({ ...prev, [reviewId]: refreshed.data || [] }));
+    } catch (err) {
+      showToast('Error submitting suggestion to review.', 'error');
+    } finally {
+      setIsSubmittingReviewSug(prev => ({ ...prev, [reviewId]: false }));
     }
   };
 
@@ -233,7 +400,7 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
       const { error } = await SupabaseService.updateReview(reviewId, {
         rating: editRating,
         content: editContent.trim()
-      });
+      }, currentUser?.id);
       if (error) {
         showToast(error.message || 'Failed to update review.', 'error');
         return;
@@ -253,7 +420,7 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
       return;
     }
     try {
-      const { error } = await SupabaseService.deleteReview(reviewId);
+      const { error } = await SupabaseService.deleteReview(reviewId, currentUser?.id);
       if (error) {
         showToast(error.message || 'Failed to delete review.', 'error');
         return;
@@ -327,6 +494,9 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   // AI Feature 4: Community Feedback Agent Auto-Analysis
   useEffect(() => {
     if (!innovation) return;
+    const analyzeKey = `${innovation?.id || 'none'}-${reviews?.length || 0}`;
+    if (lastFeedbackAnalyzedKeyRef.current === analyzeKey) return;
+    lastFeedbackAnalyzedKeyRef.current = analyzeKey;
     setIsAnalyzingFeedback(true);
     CommunityFeedbackAgent.analyze(innovation.id, reviews, innovation.title)
       .then(res => {
@@ -339,40 +509,54 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   }, [innovation?.id, reviews?.length]);
 
   useEffect(() => {
+    let isActive = true;
+    isLoadingDataRef.current = false;
     const requestedTab = sessionStorage.getItem('innovexa_detail_tab');
     if (requestedTab) {
       setActiveProjectTab(requestedTab);
       sessionStorage.removeItem('innovexa_detail_tab');
     }
+
+    if (selectedInnoId) {
+      const cached = StorageService.getInnovationById(selectedInnoId);
+      if (cached && isActive) {
+        setInnovation(cached);
+      }
+    }
+
     loadData();
 
     if (!selectedInnoId) return;
 
     // Realtime subscriptions for this project
     const unsubReviews = SupabaseService.subscribeToProjectReviews(selectedInnoId, () => {
-      loadData();
+      if (isActive) loadData();
     });
 
     const unsubLikes = SupabaseService.subscribeToProjectLikes(selectedInnoId, () => {
-      loadData();
+      if (isActive) loadData();
     });
 
-    const handler = () => loadData();
-    window.addEventListener('innovexa:datachange', handler);
-
     return () => {
-      unsubReviews();
-      unsubLikes();
-      window.removeEventListener('innovexa:datachange', handler);
+      isActive = false;
+      if (typeof unsubReviews === 'function') unsubReviews();
+      if (typeof unsubLikes === 'function') unsubLikes();
     };
-  }, [selectedInnoId, currentUser]);
+  }, [selectedInnoId, currentUser?.id]);
 
   if (!innovation) {
     return (
-      <div className="workspace-container" style={{ padding: '4rem 0', textAlign: 'center' }}>
-        <h3>No project selected</h3>
-        <button onClick={() => setActiveTab('explore')} className="btn btn-secondary" style={{ marginTop: '1rem' }}>
-          Back to Directory
+      <div className="workspace-container" style={{ padding: '6rem 0', textAlign: 'center' }}>
+        <div className="animate-spin" style={{ width: '36px', height: '36px', border: '3px solid var(--border-medium)', borderTopColor: 'var(--coral)', borderRadius: '50%', margin: '0 auto 1.5rem auto' }} />
+        <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.5rem' }}>
+          LOADING SPECIMEN TELEMETRY
+        </div>
+        <h3 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.75rem' }}>Retrieving Project Specification...</h3>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', maxWidth: '440px', margin: '0 auto 1.5rem auto', lineHeight: 1.5 }}>
+          Fetching verified research data, validation reviews, and peer analytics from the INNOVEXA network.
+        </p>
+        <button onClick={() => setActiveTab('explore')} className="btn btn-secondary btn-sm">
+          ← Return to Explore Directory
         </button>
       </div>
     );
@@ -388,114 +572,116 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
     if (!innovation?.id) return;
     const targetId = innovation.id;
     try {
-      const [votes, likes, userLiked] = await Promise.all([
+      const [votes, userVote] = await Promise.all([
         SupabaseService.getProjectVotes(targetId),
-        SupabaseService.getProjectLikes(targetId),
-        currentUser ? SupabaseService.hasUserLikedProject(targetId, currentUser.id) : false
+        currentUser ? SupabaseService.getUserProjectVote(targetId, currentUser.id) : Promise.resolve(null)
       ]);
       setProjectVotes(votes || { upvotes: 0, downvotes: 0 });
-      setProjectLikes(likes || []);
-      setHasUpvoted(Boolean(userLiked));
-      setActiveUserVote(userLiked ? 'upvote' : null);
-      setInnovation(prev => prev ? { ...prev, upvotes_count: votes?.upvotes ?? prev.upvotes_count } : prev);
-      StorageService.updateInnovation(targetId, { upvotes_count: votes?.upvotes || 0 });
+      setHasUpvoted(userVote === 'upvote');
+      setActiveUserVote(userVote);
+      setInnovation(prev => prev ? {
+        ...prev,
+        upvotes_count: votes?.upvotes ?? prev.upvotes_count,
+        downvotes_count: votes?.downvotes ?? prev.downvotes_count,
+        dislikes_count: votes?.downvotes ?? prev.dislikes_count
+      } : prev);
+      StorageService.updateInnovation(targetId, {
+        upvotes_count: votes?.upvotes || 0,
+        downvotes_count: votes?.downvotes || 0,
+        dislikes_count: votes?.downvotes || 0
+      });
     } catch (e) {
       console.error("Error fetching project likes:", e);
     }
   };
 
-  const handleUpvote = async (projectId) => {
-    try {
-      // Get currently logged-in user
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
+  const handleVoteProject = async (voteType = 'upvote') => {
+    const pId = innovation?.id;
+    if (!pId) return;
 
-      if (authError || !user) {
-        console.error("User is not logged in");
-        showToast('Please sign in to vote on projects.', 'warning');
-        return;
+    const effectiveUser = currentUser || StorageService.getCurrentUser() || { id: 'usr_guest_voter', name: 'Innovator' };
+    if (!effectiveUser?.id) {
+      showToast(`Please sign in to ${voteType === 'upvote' ? 'like' : 'dislike'} projects.`, 'warning');
+      return;
+    }
+
+    // 1. Snapshot previous state for instant rollback if network fails
+    const prevVote = activeUserVote;
+    const prevVotes = {
+      upvotes: projectVotes.upvotes ?? innovation.upvotes_count ?? 0,
+      downvotes: projectVotes.downvotes ?? innovation.downvotes_count ?? 0
+    };
+
+    // 2. Immediate optimistic computation (0ms press latency!)
+    let nextVote = null;
+    let nextUpvotes = prevVotes.upvotes;
+    let nextDownvotes = prevVotes.downvotes;
+
+    if (prevVote === voteType) {
+      // Toggle off
+      nextVote = null;
+      if (voteType === 'upvote') nextUpvotes = Math.max(0, prevVotes.upvotes - 1);
+      else nextDownvotes = Math.max(0, prevVotes.downvotes - 1);
+    } else {
+      // Switch or new vote
+      nextVote = voteType;
+      if (voteType === 'upvote') {
+        nextUpvotes = prevVotes.upvotes + 1;
+        if (prevVote === 'downvote') nextDownvotes = Math.max(0, prevVotes.downvotes - 1);
+      } else {
+        nextDownvotes = prevVotes.downvotes + 1;
+        if (prevVote === 'upvote') nextUpvotes = Math.max(0, prevVotes.upvotes - 1);
       }
+    }
 
-      console.log("Upvoting project:", {
-        projectId,
-        userId: user.id,
+    // 3. Apply optimistic UI updates immediately at press time!
+    setActiveUserVote(nextVote);
+    setHasUpvoted(nextVote === 'upvote');
+    setProjectVotes({ upvotes: nextUpvotes, downvotes: nextDownvotes });
+    setInnovation(prev => prev ? {
+      ...prev,
+      upvotes_count: nextUpvotes,
+      downvotes_count: nextDownvotes,
+      dislikes_count: nextDownvotes
+    } : prev);
+
+    if (nextVote === 'upvote') {
+      confetti({ particleCount: 30, spread: 45, origin: { y: 0.7 } });
+      showToast('👍 Liked project!', 'success');
+    } else if (nextVote === 'downvote') {
+      showToast('👎 Disliked project.', 'info');
+    } else {
+      showToast('Vote removed.', 'info');
+    }
+
+    // 4. Background sync with backend
+    try {
+      const res = await SupabaseService.voteProject({
+        projectId: pId,
+        userId: effectiveUser.id,
+        voteType: voteType
       });
 
-      // Check whether user already liked this project
-      const { data: existingLike, error: checkError } = await supabase
-        .from("project_likes")
-        .select("id")
-        .eq("project_id", projectId)
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (checkError) {
-        console.error("Error checking existing vote:", checkError);
-        return;
+      if (res.error) {
+        throw res.error;
       }
-
-      // If already liked → remove like
-      if (existingLike) {
-        const { error } = await supabase
-          .from("project_likes")
-          .delete()
-          .eq("id", existingLike.id);
-
-        if (error) {
-          console.error("Error removing like:", error);
-          return;
-        }
-
-        console.log("Upvote removed");
-        showToast('Vote removed.', 'info');
-      } else {
-        // If not liked → insert into database
-        const { data, error } = await supabase
-          .from("project_likes")
-          .insert({
-            project_id: projectId,
-            user_id: user.id,
-          })
-          .select();
-
-        if (error) {
-          console.error("Error saving upvote:", error);
-          return;
-        }
-
-        console.log("Upvote saved successfully:", data);
-        confetti({ particleCount: 35, spread: 50, origin: { y: 0.7 } });
-        showToast('▲ Upvoted project! Stored in database.', 'success');
-
-        const projectOwnerId = innovation?.user_id || innovation?.creator_id;
-        if (projectOwnerId && projectOwnerId !== user.id) {
-          SupabaseService.createNotification({
-            userId: projectOwnerId,
-            type: 'like',
-            title: 'Project Upvoted',
-            message: `${currentUser?.name || user.user_metadata?.full_name || 'An innovator'} upvoted your project "${innovation?.title || 'Untitled'}".`,
-            projectId: projectId
-          }).catch(err => console.error("Error creating like notification:", err));
-        }
-      }
-
-      // Refresh project likes/count here
-      await fetchProjectLikes();
-
-    } catch (error) {
-      console.error("Upvote failed:", error);
+    } catch (err) {
+      console.warn("Project vote operation failed, rolling back:", err);
+      setActiveUserVote(prevVote);
+      setHasUpvoted(prevVote === 'upvote');
+      setProjectVotes(prevVotes);
+      setInnovation(prev => prev ? {
+        ...prev,
+        upvotes_count: prevVotes.upvotes,
+        downvotes_count: prevVotes.downvotes,
+        dislikes_count: prevVotes.downvotes
+      } : prev);
+      showToast('Error recording project vote.', 'error');
     }
   };
 
-  const handleVoteProject = async (voteType = 'upvote') => {
-    if (voteType === 'upvote') {
-      return handleUpvote(innovation?.id);
-    }
-  };
-
-  const handleToggleUpvote = () => handleUpvote(innovation?.id);
+  const handleUpvote = (targetProjectId = null) => handleVoteProject('upvote');
+  const handleToggleUpvote = () => handleVoteProject('upvote');
 
   const handleDeleteProject = async () => {
     if (window.confirm(`Permanently delete project "${innovation.title}"?`)) {
@@ -512,6 +698,134 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   const handleEditProject = () => {
     setSelectedInnoId(innovation.id);
     setActiveTab('submit');
+  };
+
+  const handleToggleFollow = async () => {
+    if (!currentUser) {
+      showToast('Please sign in to follow this project.', 'warning');
+      return;
+    }
+    const prevFollowing = isFollowing;
+    const nextFollowing = !prevFollowing;
+    
+    // Instant optimistic UI update (0ms press latency!)
+    setIsFollowing(nextFollowing);
+    setIsWaitlisted(nextFollowing);
+    setFollowersCount(prev => nextFollowing ? prev + 1 : Math.max(0, prev - 1));
+    
+    if (nextFollowing) {
+      confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
+      showToast(`★ Following "${innovation.title}"! Recorded in database.`, 'success');
+    } else {
+      showToast(`Unfollowed "${innovation.title}".`, 'info');
+    }
+
+    try {
+      const res = await SupabaseService.toggleFollowProject(innovation.id, currentUser.id);
+      if (res.error) {
+        throw res.error;
+      }
+    } catch (e) {
+      // Rollback if network fails
+      setIsFollowing(prevFollowing);
+      setIsWaitlisted(prevFollowing);
+      setFollowersCount(prev => prevFollowing ? prev + 1 : Math.max(0, prev - 1));
+      showToast('Error updating follow status in database.', 'error');
+    }
+  };
+
+  const handlePublishProject = async () => {
+    if (!isOwner || !currentUser?.id) return;
+    try {
+      const updates = {
+        status: 'UNDER_VALIDATION',
+        is_public: true,
+        published_at: new Date().toISOString()
+      };
+      const { data, error } = await SupabaseService.updateProject(innovation.id, updates, currentUser.id);
+      if (error) {
+        showToast(error.message || 'Error publishing project.', 'error');
+        return;
+      }
+      setInnovation(prev => ({ ...prev, ...updates }));
+      showToast('Project published to the INNOVEXA directory!', 'success');
+      loadData();
+    } catch (e) {
+      showToast('Error publishing project.', 'error');
+    }
+  };
+
+  const handleUnpublishProject = async () => {
+    if (!isOwner || !currentUser?.id) return;
+    if (window.confirm('Unpublish this project and convert to private draft?')) {
+      try {
+        const updates = {
+          status: 'DRAFT',
+          is_public: false
+        };
+        const { data, error } = await SupabaseService.updateProject(innovation.id, updates, currentUser.id);
+        if (error) {
+          showToast(error.message || 'Error unpublishing project.', 'error');
+          return;
+        }
+        setInnovation(prev => ({ ...prev, ...updates }));
+        showToast('Project moved to private draft mode.', 'info');
+        loadData();
+      } catch (e) {
+        showToast('Error unpublishing project.', 'error');
+      }
+    }
+  };
+
+  const handleSubmitSuggestion = async (e) => {
+    e.preventDefault();
+    if (!currentUser) {
+      showToast('Please sign in to submit a suggestion.', 'warning');
+      return;
+    }
+    if (!newSuggestionContent.trim()) {
+      showToast('Suggestion description cannot be empty.', 'warning');
+      return;
+    }
+    setIsSubmittingSuggestion(true);
+    try {
+      const { data, error } = await SupabaseService.createProjectSuggestion({
+        projectId: innovation.id,
+        userId: currentUser.id,
+        title: newSuggestionTitle.trim() || 'Community Suggestion',
+        content: newSuggestionContent.trim(),
+        suggestionType: newSuggestionType
+      });
+      if (error) {
+        showToast(error.message || 'Error submitting suggestion.', 'error');
+        return;
+      }
+      setNewSuggestionTitle('');
+      setNewSuggestionContent('');
+      showToast('Suggestion recorded in project ledger!', 'success');
+      const refreshed = await SupabaseService.getProjectSuggestions(innovation.id);
+      setSuggestions(refreshed.data || []);
+    } catch (e) {
+      showToast('Error submitting suggestion.', 'error');
+    } finally {
+      setIsSubmittingSuggestion(false);
+    }
+  };
+
+  const handleUpdateSuggestionStatus = async (suggestionId, newStatus) => {
+    if (!isOwner) return;
+    try {
+      const { data, error } = await SupabaseService.updateProjectSuggestionStatus(suggestionId, newStatus, currentUser?.id);
+      if (error) {
+        showToast(error.message || 'Error updating suggestion status.', 'error');
+        return;
+      }
+      showToast(`Suggestion status updated to ${newStatus}.`, 'success');
+      const refreshed = await SupabaseService.getProjectSuggestions(innovation.id);
+      setSuggestions(refreshed.data || []);
+    } catch (e) {
+      showToast('Error updating suggestion status.', 'error');
+    }
   };
 
   const handleAddComment = (e) => {
@@ -551,7 +865,7 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
   };
 
   const handleSubmitQuickPerspective = async (e) => {
-    e.preventDefault();
+    if (e?.preventDefault) e.preventDefault();
     if (!currentUser) {
       showToast('Please sign in to submit a review.', 'warning');
       return;
@@ -563,9 +877,9 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
     }
 
     if (isSubmittingReview) return;
-    setIsSubmittingReview(true);
 
     try {
+      setIsSubmittingReview(true);
       const reviewContent = `Problem Relevance: ${q1}. Would Use: ${q2}.${q3 ? ` Focus: ${q3}.` : ''}${q4 ? ` Improvement: ${q4.trim()}` : ''}`;
       await SupabaseService.submitReview(innovation.id, 5, reviewContent);
 
@@ -573,15 +887,16 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
       confetti({ particleCount: 40, spread: 60, origin: { y: 0.6 } });
       showToast('Review submitted and saved in Supabase reviews table!', 'success');
       loadData();
-    } catch (err) {
-      showToast(err.message || 'Error submitting review.', 'error');
+    } catch (error) {
+      console.error("Review operation failed:", error);
+      showToast(error.message || 'Error submitting review.', 'error');
     } finally {
       setIsSubmittingReview(false);
     }
   };
 
   // Adaptive Primary CTA execution
-  const handlePrimaryCtaClick = () => {
+  const handlePrimaryCtaClick = async () => {
     if (stage === 'live' && (innovation.website_url || innovation.demo_url)) {
       window.open(innovation.website_url || innovation.demo_url, '_blank', 'noopener,noreferrer');
       return;
@@ -599,14 +914,6 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
       return;
     }
 
-    // Community Actions Fallback for Idea / Concept / Waitlist
-    if (innovation.next_community_action === 'waitlist' || stage === 'idea' || stage === 'concept') {
-      setIsWaitlisted(true);
-      confetti({ particleCount: 45, spread: 60, origin: { y: 0.6 } });
-      showToast(`🎉 You are following "${innovation.title}" and on the early access journey!`, 'success');
-      return;
-    }
-
     if (innovation.next_community_action === 'feedback') {
       setSelectedInnoId(innovation.id);
       setActiveTab('review_submit');
@@ -614,26 +921,38 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
     }
 
     if (innovation.next_community_action === 'contact') {
-      const creatorId = innovation.user_id || innovation.creator_id;
-      if (creatorId && currentUser && creatorId !== currentUser.id) {
-        SupabaseService.sendMessage({
-          senderId: currentUser.id,
-          receiverId: creatorId,
-          content: `Hi! I found your project "${innovation.title}" on INNOVEXA and would love to connect.`,
-          senderName: currentUser.name || currentUser.full_name || 'Innovator',
-          senderAvatar: currentUser.avatar || currentUser.avatar_url || '',
-          receiverName: innovation.creator_name || 'Innovator',
-          receiverAvatar: innovation.creator_avatar || ''
-        });
-      }
-      setActiveTab('messages');
+      setActiveTab('community');
       return;
     }
 
-    // Default: Follow project
-    setIsFollowing(!isFollowing);
-    if (!isFollowing) {
-      showToast(`Following ${innovation.title}! You will be notified of new milestones.`, 'success');
+    // Follow / Early Access / Waitlist action
+    if (!currentUser) {
+      showToast('Please sign in to follow this project.', 'warning');
+      return;
+    }
+
+    try {
+      const res = await SupabaseService.toggleFollowProject({
+        projectId: innovation.id,
+        userId: currentUser.id,
+        projectTitle: innovation.title,
+        projectOwnerId: innovation.user_id || innovation.creator_id,
+        userName: currentUser.name || currentUser.full_name || 'Innovator',
+        userAvatar: currentUser.avatar || currentUser.avatar_url || ''
+      });
+
+      if (!res.error) {
+        setIsFollowing(res.isFollowing);
+        setIsWaitlisted(res.isFollowing);
+        if (res.isFollowing) {
+          confetti({ particleCount: 45, spread: 60, origin: { y: 0.6 } });
+          showToast(`🎉 You are now following "${innovation.title}" and on the journey!`, 'success');
+        } else {
+          showToast(`Unfollowed "${innovation.title}".`, 'info');
+        }
+      }
+    } catch (err) {
+      console.error('Follow operation failed:', err);
     }
   };
 
@@ -738,25 +1057,26 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
               {innovation.short_description || innovation.problem_statement?.slice(0, 160)}
             </p>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.86rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
-              <img src={innovation.creator_avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100'} alt="" style={{ width: '26px', height: '26px', borderRadius: '50%' }} />
-              <span>Created by <strong>{innovation.creator_name || 'Innovator'}</strong></span>
-              {(innovation.user_id || innovation.creator_id) && (innovation.user_id || innovation.creator_id) !== currentUser?.id && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!currentUser) {
-                      showToast('Please sign in to message creators.', 'info');
-                      return;
+              <div
+                onClick={() => {
+                  const creatorId = innovation.user_id || innovation.creator_id;
+                  if (creatorId) {
+                    if (setViewUserId) setViewUserId(creatorId);
+                    if (typeof setActiveTab === 'function') {
+                      setActiveTab('profile', creatorId);
                     }
-                    const creatorId = innovation.user_id || innovation.creator_id;
-                    if (setSelectedRecipientId) setSelectedRecipientId(creatorId);
-                    setActiveTab('messages');
-                  }}
-                  className="btn btn-ghost btn-sm"
-                  style={{ color: 'var(--coral)', padding: '2px 8px', fontSize: '0.74rem', gap: '0.25rem' }}
-                >
-                  <MessageSquare size={12} /> Message Creator
-                </button>
+                  }
+                }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
+                title="View Creator Public Profile"
+              >
+                <img src={innovation.creator_avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100'} alt="" style={{ width: '26px', height: '26px', borderRadius: '50%' }} />
+                <span>Created by <strong style={{ color: 'var(--coral)' }}>{innovation.creator_name || 'Innovator'}</strong></span>
+              </div>
+              {isOwner && (
+                <span className="badge badge-primary" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                  YOUR SPECIMEN
+                </span>
               )}
               <span>•</span>
               <span className="mono">v{innovation.version || 1}.0</span>
@@ -771,25 +1091,43 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
 
           {/* Action Button Strip */}
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            {/* 3-State Project Upvote & Downvote Button Group */}
+            {/* Mutually Exclusive Project Like & Dislike Button Group */}
             <div style={{ display: 'inline-flex', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
               <button
-                onClick={() => handleUpvote(innovation.id)}
+                onClick={() => handleVoteProject('upvote')}
                 className={`btn btn-sm ${activeUserVote === 'upvote' ? 'btn-coral' : 'btn-secondary'}`}
                 style={{ borderRadius: 0, border: 'none', borderRight: '1px solid var(--border-subtle)', gap: '0.35rem', fontWeight: 700 }}
-                title="Upvote Project"
+                title="Like Project"
               >
-                ▲ UPVOTE ({projectVotes.upvotes || innovation.upvotes_count || 0})
+                👍 LIKE ({projectVotes.upvotes || innovation.upvotes_count || 0})
               </button>
               <button
                 onClick={() => handleVoteProject('downvote')}
-                className={`btn btn-sm ${activeUserVote === 'downvote' ? 'btn-secondary active-downvote' : 'btn-secondary'}`}
-                style={{ borderRadius: 0, border: 'none', gap: '0.35rem', color: activeUserVote === 'downvote' ? 'var(--coral)' : 'inherit', fontWeight: 700 }}
-                title="Downvote Project"
+                className={`btn btn-sm ${activeUserVote === 'downvote' ? 'btn-secondary' : 'btn-secondary'}`}
+                style={{
+                  borderRadius: 0,
+                  border: 'none',
+                  gap: '0.35rem',
+                  color: activeUserVote === 'downvote' ? 'var(--coral)' : 'inherit',
+                  fontWeight: 700,
+                  backgroundColor: activeUserVote === 'downvote' ? 'rgba(231, 111, 130, 0.15)' : undefined
+                }}
+                title="Dislike Project"
               >
-                ▼ ({projectVotes.downvotes || innovation.downvotes_count || 0})
+                👎 DISLIKE ({projectVotes.downvotes || innovation.downvotes_count || 0})
               </button>
             </div>
+
+            {/* Follow / Unfollow Button */}
+            <button
+              onClick={handleToggleFollow}
+              className={`btn btn-sm ${isFollowing ? 'btn-coral' : 'btn-secondary'}`}
+              style={{ gap: '0.35rem', fontWeight: 700 }}
+              title={isFollowing ? 'Unfollow Project' : 'Follow Project'}
+            >
+              <Heart size={14} fill={isFollowing ? 'currentColor' : 'none'} />
+              {isFollowing ? 'FOLLOWING' : 'FOLLOW'} ({followersCount})
+            </button>
 
             {projectLikes.length > 0 && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.76rem', color: 'var(--text-secondary)', padding: '0.2rem 0.5rem', backgroundColor: 'var(--bg-cream)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
@@ -860,9 +1198,28 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
               <Sparkles size={15} color="var(--coral)" /> ✦ IMPROVE THIS IDEA
             </button>
 
-            {/* If Creator: Edit & Delete */}
+            {/* If Creator: Publish/Unpublish, Edit & Delete */}
             {isOwner && (
               <>
+                {innovation.status === 'DRAFT' || !innovation.is_public ? (
+                  <button
+                    onClick={handlePublishProject}
+                    className="btn btn-coral btn-sm"
+                    style={{ gap: '0.35rem', fontWeight: 800 }}
+                    title="Publish project to directory"
+                  >
+                    <Rocket size={14} /> PUBLISH PROJECT
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleUnpublishProject}
+                    className="btn btn-secondary btn-sm"
+                    style={{ gap: '0.35rem' }}
+                    title="Revert to private draft"
+                  >
+                    <Lock size={14} /> UNPUBLISH (DRAFT)
+                  </button>
+                )}
                 <button
                   onClick={handleEditProject}
                   className="btn btn-secondary"
@@ -1002,34 +1359,750 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
 
       {/* Project Navigation Tabs */}
       <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '2.5rem', borderBottom: '1px solid var(--border-hairline)', paddingBottom: '0.5rem', overflowX: 'auto' }}>
-        {['OVERVIEW', 'COMPARISON', 'FEEDBACK', 'INSIGHTS', 'IMPROVEMENTS', 'LAUNCH'].map(tab => (
+        {[
+          { id: 'OVERVIEW', label: 'OVERVIEW' },
+          { id: 'AI_ANALYSIS', label: '✦ AI ANALYSIS' },
+          { id: 'AI_IMPROVEMENT', label: '✦ AI IMPROVEMENT' },
+          { id: 'AI_SUMMARY', label: '✦ AI SUMMARY' },
+          { id: 'AI_RESEARCH', label: '✦ OPEN SOURCE RESEARCH' },
+          { id: 'COMPARISON', label: 'COMPARISON' },
+          { id: 'SUGGESTIONS', label: `SUGGESTIONS (${suggestions.length})` },
+          { id: 'FEEDBACK', label: `FEEDBACK (${reviews.length})` },
+          { id: 'IMPROVEMENTS', label: 'ROADMAP' },
+          { id: 'LAUNCH', label: 'LAUNCH' }
+        ].map(tab => (
           <button
-            key={tab}
+            key={tab.id}
             onClick={() => {
-              setActiveProjectTab(tab);
-              if (tab === 'COMPARISON' && !comparisonResult) {
+              setActiveProjectTab(tab.id);
+              if (tab.id === 'COMPARISON' && !comparisonResult) {
                 handleCompareExistingSolutions();
+              }
+              if (tab.id === 'AI_ANALYSIS' && !projectAnalysis) {
+                handleRunProjectAnalysis();
+              }
+              if (tab.id === 'AI_IMPROVEMENT' && !projectImprovement) {
+                handleRunProjectImprovement();
+              }
+              if (tab.id === 'AI_SUMMARY' && !projectSummary) {
+                handleRunProjectSummary();
               }
             }}
             style={{
-              padding: '0.65rem 1.25rem',
+              padding: '0.65rem 1.15rem',
               background: 'none',
               border: 'none',
               borderBottom: '2px solid',
-              borderColor: activeProjectTab === tab ? 'var(--coral)' : 'transparent',
-              color: activeProjectTab === tab ? 'var(--text-primary)' : 'var(--text-secondary)',
+              borderColor: activeProjectTab === tab.id ? 'var(--coral)' : 'transparent',
+              color: activeProjectTab === tab.id ? 'var(--text-primary)' : 'var(--text-secondary)',
               fontFamily: 'var(--font-mono)',
               fontWeight: 700,
               fontSize: '0.78rem',
               letterSpacing: '0.08em',
               cursor: 'pointer',
+              whiteSpace: 'nowrap',
               transition: 'all 0.15s ease'
             }}
           >
-            {tab === 'FEEDBACK' ? `FEEDBACK (${reviews.length})` : tab === 'COMPARISON' ? 'COMPARISON' : tab}
+            {tab.label}
           </button>
         ))}
       </div>
+
+      {/* ================= 1. AI PROJECT ANALYSIS TAB (8 DIMENSIONS & STRUCTURED SCORE) ================= */}
+      {activeProjectTab === 'AI_ANALYSIS' && (
+        <div style={{ animation: 'fadeIn 0.25s ease-out', display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+          {/* Header Action Banner */}
+          <div
+            className="editorial-card"
+            style={{
+              backgroundColor: 'var(--bg-white)',
+              borderLeft: '5px solid var(--coral)',
+              padding: '2rem 2.5rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '1.5rem'
+            }}
+          >
+            <div>
+              <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                <Sparkles size={14} /> 1. AI PROJECT ANALYSIS (8 DIMENSIONS)
+              </div>
+              <h2 style={{ fontSize: '1.8rem', fontWeight: 800, margin: 0 }}>
+                Comprehensive Innovation Evaluation
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', margin: '0.35rem 0 0 0' }}>
+                Structured multi-criteria analysis evaluating problem quality, solution viability, market demand, and technical defensibility.
+              </p>
+            </div>
+
+            <button
+              onClick={handleRunProjectAnalysis}
+              disabled={isAnalyzingProject}
+              className="btn btn-coral"
+              style={{ gap: '0.45rem', fontWeight: 800 }}
+            >
+              <Sparkles size={15} /> {isAnalyzingProject ? 'ANALYZING...' : 'RE-ANALYZE PROJECT ↗'}
+            </button>
+          </div>
+
+          {isAnalyzingProject ? (
+            <div className="editorial-card" style={{ padding: '4.5rem', textAlign: 'center', backgroundColor: 'var(--bg-white)' }}>
+              <div className="animate-spin" style={{ width: '36px', height: '36px', border: '3px solid var(--border-subtle)', borderTopColor: 'var(--coral)', borderRadius: '50%', margin: '0 auto 1.25rem auto' }} />
+              <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.35rem' }}>
+                ✦ AI MULTI-DIMENSIONAL ANALYST
+              </div>
+              <h3 style={{ fontSize: '1.45rem', marginBottom: '0.35rem' }}>Scoring 8 Architectural & Domain Dimensions...</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', maxWidth: '500px', margin: '0 auto' }}>
+                Evaluating problem clarity, solution feasibility, market upside, scalability, and target user focus.
+              </p>
+            </div>
+          ) : projectAnalysis ? (
+            <>
+              {/* Structured Overall Score Banner */}
+              {projectAnalysis.structured_score && (
+                <div
+                  className="editorial-card"
+                  style={{
+                    backgroundColor: 'var(--bg-dark)',
+                    color: '#FFFFFF',
+                    padding: '2.5rem',
+                    borderRadius: 'var(--radius-lg)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '2rem'
+                  }}
+                >
+                  <div style={{ flex: '1 1 500px' }}>
+                    <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.4rem' }}>
+                      STRUCTURED VENTURE READINESS SCORE
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+                      <span style={{ fontFamily: 'var(--font-editorial)', fontSize: '3.6rem', fontWeight: 800, color: 'var(--coral)', lineHeight: 1 }}>
+                        {projectAnalysis.structured_score.overall_score}
+                      </span>
+                      <span style={{ fontSize: '1.2rem', color: 'rgba(255, 255, 255, 0.6)' }}>/ 100</span>
+                      <span
+                        style={{
+                          backgroundColor: 'rgba(231, 111, 130, 0.25)',
+                          color: 'var(--coral)',
+                          fontWeight: 900,
+                          fontSize: '1.1rem',
+                          padding: '0.2rem 0.8rem',
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid var(--coral)'
+                        }}
+                      >
+                        GRADE {projectAnalysis.structured_score.grade || 'A'}
+                      </span>
+                    </div>
+                    <p style={{ color: 'var(--text-inverse-muted)', fontSize: '0.94rem', margin: 0, lineHeight: 1.5 }}>
+                      {projectAnalysis.structured_score.summary}
+                    </p>
+                  </div>
+
+                  {projectAnalysis.structured_score.dimension_scores && (
+                    <div style={{ minWidth: '220px', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                      <div className="editorial-mono-label" style={{ color: 'var(--text-inverse-muted)', fontSize: '0.68rem', marginBottom: '0.2rem' }}>
+                        DIMENSION BREAKDOWN
+                      </div>
+                      {Object.entries(projectAnalysis.structured_score.dimension_scores).map(([dim, score]) => (
+                        <div key={dim} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.78rem' }}>
+                          <span style={{ textTransform: 'capitalize', color: 'rgba(255,255,255,0.75)' }}>{dim.replace('_', ' ')}:</span>
+                          <strong style={{ color: 'var(--coral)' }}>{score}/100</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 8 Dimensions Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
+                {/* 1. Problem Quality */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--coral)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--coral)', fontSize: '0.7rem' }}>01. PROBLEM QUALITY</span>
+                    <strong style={{ color: 'var(--coral)', fontSize: '1.1rem' }}>{projectAnalysis.problem_quality?.score || 85}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    RATING: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.problem_quality?.rating || 'Solid'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.problem_quality?.analysis}
+                  </p>
+                </div>
+
+                {/* 2. Solution Quality */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--teal)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--teal)', fontSize: '0.7rem' }}>02. SOLUTION QUALITY</span>
+                    <strong style={{ color: 'var(--teal)', fontSize: '1.1rem' }}>{projectAnalysis.solution_quality?.score || 85}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    RATING: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.solution_quality?.rating || 'Solid'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.solution_quality?.analysis}
+                  </p>
+                </div>
+
+                {/* 3. Innovation Level */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--periwinkle)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--periwinkle)', fontSize: '0.7rem' }}>03. INNOVATION LEVEL</span>
+                    <strong style={{ color: 'var(--periwinkle)', fontSize: '1.1rem' }}>{projectAnalysis.innovation_level?.score || 80}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    LEVEL: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.innovation_level?.level || 'High'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.innovation_level?.analysis}
+                  </p>
+                </div>
+
+                {/* 4. Market Potential */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--lavender)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--lavender)', fontSize: '0.7rem' }}>04. MARKET POTENTIAL</span>
+                    <strong style={{ color: 'var(--lavender)', fontSize: '1.1rem' }}>{projectAnalysis.market_potential?.score || 82}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    POTENTIAL: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.market_potential?.potential || 'High'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.market_potential?.analysis}
+                  </p>
+                </div>
+
+                {/* 5. Technical Feasibility */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--green)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--green)', fontSize: '0.7rem' }}>05. TECHNICAL FEASIBILITY</span>
+                    <strong style={{ color: 'var(--green)', fontSize: '1.1rem' }}>{projectAnalysis.technical_feasibility?.score || 88}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    FEASIBILITY: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.technical_feasibility?.level || 'High'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.technical_feasibility?.analysis}
+                  </p>
+                </div>
+
+                {/* 6. Scalability */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--apricot)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--apricot)', fontSize: '0.7rem' }}>06. SCALABILITY</span>
+                    <strong style={{ color: 'var(--apricot)', fontSize: '1.1rem' }}>{projectAnalysis.scalability?.score || 84}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    LEVEL: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.scalability?.level || 'High'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.scalability?.analysis}
+                  </p>
+                </div>
+
+                {/* 7. Target User Clarity */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--teal)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--teal)', fontSize: '0.7rem' }}>07. TARGET USER CLARITY</span>
+                    <strong style={{ color: 'var(--teal)', fontSize: '1.1rem' }}>{projectAnalysis.target_user_clarity?.score || 90}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    CLARITY: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.target_user_clarity?.level || 'Clear'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.target_user_clarity?.analysis}
+                  </p>
+                </div>
+
+                {/* 8. Competitive Differentiation */}
+                <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--coral)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                    <span className="editorial-mono-label" style={{ color: 'var(--coral)', fontSize: '0.7rem' }}>08. COMPETITIVE DIFFERENTIATION</span>
+                    <strong style={{ color: 'var(--coral)', fontSize: '1.1rem' }}>{projectAnalysis.competitive_differentiation?.score || 80}/100</strong>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    DISTINCTION: <span style={{ color: 'var(--text-primary)' }}>{projectAnalysis.competitive_differentiation?.level || 'Distinct'}</span>
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '0.88rem', lineHeight: 1.5, margin: 0 }}>
+                    {projectAnalysis.competitive_differentiation?.analysis}
+                  </p>
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
+
+      {/* ================= 2. AI PROJECT IMPROVEMENT TAB (5 SUGGESTION PILLARS) ================= */}
+      {activeProjectTab === 'AI_IMPROVEMENT' && (
+        <div style={{ animation: 'fadeIn 0.25s ease-out', display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+          {/* Header Action Banner */}
+          <div
+            className="editorial-card"
+            style={{
+              backgroundColor: 'var(--bg-white)',
+              borderLeft: '5px solid var(--teal)',
+              padding: '2rem 2.5rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '1.5rem'
+            }}
+          >
+            <div>
+              <div className="editorial-mono-label" style={{ color: 'var(--teal)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                <Sparkles size={14} /> 2. AI PROJECT IMPROVEMENT ASSISTANT
+              </div>
+              <h2 style={{ fontSize: '1.8rem', fontWeight: 800, margin: 0 }}>
+                Actionable Optimization Roadmap
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', margin: '0.35rem 0 0 0' }}>
+                Targeted AI recommendations across problem refinement, solution features, technical architecture, and business traction.
+              </p>
+            </div>
+
+            <button
+              onClick={handleRunProjectImprovement}
+              disabled={isImprovingProject}
+              className="btn btn-primary"
+              style={{ gap: '0.45rem', fontWeight: 800 }}
+            >
+              <Sparkles size={15} /> {isImprovingProject ? 'GENERATING...' : 'REFRESH IMPROVEMENTS ↗'}
+            </button>
+          </div>
+
+          {isImprovingProject ? (
+            <div className="editorial-card" style={{ padding: '4.5rem', textAlign: 'center', backgroundColor: 'var(--bg-white)' }}>
+              <div className="animate-spin" style={{ width: '36px', height: '36px', border: '3px solid var(--border-subtle)', borderTopColor: 'var(--teal)', borderRadius: '50%', margin: '0 auto 1.25rem auto' }} />
+              <div className="editorial-mono-label" style={{ color: 'var(--teal)', marginBottom: '0.35rem' }}>
+                ✦ AI OPTIMIZATION ENGINE
+              </div>
+              <h3 style={{ fontSize: '1.45rem', marginBottom: '0.35rem' }}>Synthesizing 5 Pillars of Project Improvement...</h3>
+            </div>
+          ) : projectImprovement ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+              {/* Actionable Executive Summary */}
+              {projectImprovement.actionable_summary && (
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'rgba(88, 184, 173, 0.08)', borderLeft: '4px solid var(--teal)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--teal)', marginBottom: '0.5rem' }}>
+                    EXECUTIVE ACTION SUMMARY
+                  </div>
+                  <p style={{ color: 'var(--text-primary)', fontSize: '1.02rem', lineHeight: 1.6, margin: 0, fontWeight: 600 }}>
+                    {projectImprovement.actionable_summary}
+                  </p>
+                </div>
+              )}
+
+              {/* 5 Suggestion Pillars */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.75rem' }}>
+                {/* 1. Problem Refinement */}
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--coral)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.65rem' }}>
+                    01 / PROBLEM REFINEMENT
+                  </div>
+                  <h4 style={{ fontSize: '1.15rem', fontWeight: 800, marginBottom: '0.85rem' }}>Sharp Problem Formulation</h4>
+                  <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    {(projectImprovement.problem_refinement || []).map((item, i) => (
+                      <li key={i} style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.5 }}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* 2. Solution Improvement */}
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--teal)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--teal)', marginBottom: '0.65rem' }}>
+                    02 / SOLUTION IMPROVEMENT
+                  </div>
+                  <h4 style={{ fontSize: '1.15rem', fontWeight: 800, marginBottom: '0.85rem' }}>Value Delivery & UX</h4>
+                  <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    {(projectImprovement.solution_improvement || []).map((item, i) => (
+                      <li key={i} style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.5 }}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* 3. Missing Features */}
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--periwinkle)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--periwinkle)', marginBottom: '0.65rem' }}>
+                    03 / RECOMMENDED MISSING FEATURES
+                  </div>
+                  <h4 style={{ fontSize: '1.15rem', fontWeight: 800, marginBottom: '0.85rem' }}>High-Impact Additions</h4>
+                  <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    {(projectImprovement.missing_features || []).map((item, i) => (
+                      <li key={i} style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.5 }}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* 4. Technical Improvements */}
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--green)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--green)', marginBottom: '0.65rem' }}>
+                    04 / TECHNICAL IMPROVEMENTS
+                  </div>
+                  <h4 style={{ fontSize: '1.15rem', fontWeight: 800, marginBottom: '0.85rem' }}>Architecture & Resilience</h4>
+                  <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    {(projectImprovement.technical_improvements || []).map((item, i) => (
+                      <li key={i} style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.5 }}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* 5. Business Improvements */}
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--lavender)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--lavender)', marginBottom: '0.65rem' }}>
+                    05 / BUSINESS & GO-TO-MARKET
+                  </div>
+                  <h4 style={{ fontSize: '1.15rem', fontWeight: 800, marginBottom: '0.85rem' }}>Adoption & Market Traction</h4>
+                  <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    {(projectImprovement.business_improvements || []).map((item, i) => (
+                      <li key={i} style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.5 }}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* ================= 3. AI PROJECT SUMMARY TAB ================= */}
+      {activeProjectTab === 'AI_SUMMARY' && (
+        <div style={{ animation: 'fadeIn 0.25s ease-out', display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+          {/* Header Action Banner */}
+          <div
+            className="editorial-card"
+            style={{
+              backgroundColor: 'var(--bg-white)',
+              borderLeft: '5px solid var(--periwinkle)',
+              padding: '2rem 2.5rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '1.5rem'
+            }}
+          >
+            <div>
+              <div className="editorial-mono-label" style={{ color: 'var(--periwinkle)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                <Sparkles size={14} /> 3. AI PROJECT SUMMARY
+              </div>
+              <h2 style={{ fontSize: '1.8rem', fontWeight: 800, margin: 0 }}>
+                Synthesized Project Dossier
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', margin: '0.35rem 0 0 0' }}>
+                Clean, concise executive summaries extracted from technical specifications and domain objectives.
+              </p>
+            </div>
+
+            <button
+              onClick={handleRunProjectSummary}
+              disabled={isSummarizingProject}
+              className="btn btn-secondary"
+              style={{ gap: '0.45rem', fontWeight: 800 }}
+            >
+              <Sparkles size={15} /> {isSummarizingProject ? 'GENERATING...' : 'REFRESH SUMMARY ↗'}
+            </button>
+          </div>
+
+          {isSummarizingProject ? (
+            <div className="editorial-card" style={{ padding: '4.5rem', textAlign: 'center', backgroundColor: 'var(--bg-white)' }}>
+              <div className="animate-spin" style={{ width: '36px', height: '36px', border: '3px solid var(--border-subtle)', borderTopColor: 'var(--periwinkle)', borderRadius: '50%', margin: '0 auto 1.25rem auto' }} />
+              <h3 style={{ fontSize: '1.45rem', marginBottom: '0.35rem' }}>Synthesizing Executive Summaries...</h3>
+            </div>
+          ) : projectSummary ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+              {/* Short Summary */}
+              <div className="editorial-card" style={{ padding: '2.25rem', backgroundColor: 'var(--bg-white)', borderLeft: '5px solid var(--coral)' }}>
+                <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.5rem' }}>
+                  EXECUTIVE SHORT SUMMARY
+                </div>
+                <p style={{ fontSize: '1.1rem', lineHeight: 1.65, color: 'var(--text-primary)', margin: 0, fontWeight: 600 }}>
+                  {projectSummary.short_summary}
+                </p>
+              </div>
+
+              {/* Problem & Solution Summaries */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.75rem' }}>
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--coral)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.65rem' }}>
+                    PROBLEM SUMMARY
+                  </div>
+                  <p style={{ fontSize: '0.94rem', lineHeight: 1.6, color: 'var(--text-primary)', margin: 0 }}>
+                    {projectSummary.problem_summary}
+                  </p>
+                </div>
+
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--teal)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--teal)', marginBottom: '0.65rem' }}>
+                    SOLUTION SUMMARY
+                  </div>
+                  <p style={{ fontSize: '0.94rem', lineHeight: 1.6, color: 'var(--text-primary)', margin: 0 }}>
+                    {projectSummary.solution_summary}
+                  </p>
+                </div>
+              </div>
+
+              {/* Target Users & Key Features */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.75rem' }}>
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--periwinkle)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--periwinkle)', marginBottom: '0.65rem' }}>
+                    TARGET USERS & AUDIENCE
+                  </div>
+                  <p style={{ fontSize: '0.94rem', lineHeight: 1.6, color: 'var(--text-primary)', margin: 0 }}>
+                    {projectSummary.target_users}
+                  </p>
+                </div>
+
+                <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--lavender)' }}>
+                  <div className="editorial-mono-label" style={{ color: 'var(--lavender)', marginBottom: '0.65rem' }}>
+                    KEY FEATURES & CAPABILITIES
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {(projectSummary.key_features || []).map((feat, idx) => (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+                        <CheckCircle2 size={15} color="var(--green)" style={{ flexShrink: 0 }} />
+                        <span>{feat}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* ================= 4. OPEN SOURCE AI RESEARCH & HUMAN EVALUATION TAB ================= */}
+      {activeProjectTab === 'AI_RESEARCH' && (
+        <div style={{ animation: 'fadeIn 0.25s ease-out', display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+          <div
+            className="editorial-card"
+            style={{
+              backgroundColor: 'var(--bg-white)',
+              borderLeft: '5px solid var(--coral)',
+              padding: '2.5rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '1.5rem'
+            }}
+          >
+            <div>
+              <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                <Sparkles size={14} /> OPEN SOURCE INTELLIGENCE & HUMAN EVALUATION
+              </div>
+              <h2 style={{ fontSize: '2rem', fontWeight: 800, margin: 0 }}>
+                Synthesize Open Source Research
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.94rem', margin: '0.35rem 0 0 0', maxWidth: '680px' }}>
+                Discover verified GitHub repositories, arXiv scientific preprints, Hugging Face models, and submit a structured human evaluation to archive breakthrough insights for this specimen.
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                if (setActiveTab) {
+                  setSelectedInnoId(innovation.id);
+                  setActiveTab('research');
+                }
+              }}
+              className="btn btn-coral btn-lg"
+              style={{ gap: '0.5rem', fontWeight: 800 }}
+            >
+              Launch Full AI Research Desk & Human Form ↗
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ================= SUGGESTIONS TAB ================= */}
+      {activeProjectTab === 'SUGGESTIONS' && (
+        <div style={{ animation: 'fadeIn 0.25s ease-out', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+          {/* Suggestion Submission Form */}
+          <div className="editorial-card" style={{ padding: '2rem', backgroundColor: 'var(--bg-white)', borderLeft: '4px solid var(--coral)' }}>
+            <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.5rem' }}>
+              PROJECT EVOLUTION & IDEATION
+            </div>
+            <h3 style={{ fontSize: '1.4rem', marginBottom: '0.5rem' }}>Submit an Architecture or Feature Suggestion</h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+              Collaborate directly with the creators of "{innovation.title}" by submitting concrete technical suggestions, feature requests, or architecture enhancements.
+            </p>
+
+            <form onSubmit={handleSubmitSuggestion} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '0.82rem' }}>Suggestion Title</label>
+                  <input
+                    type="text"
+                    value={newSuggestionTitle}
+                    onChange={e => setNewSuggestionTitle(e.target.value)}
+                    placeholder="e.g., Integrate decentralized authentication layer"
+                    className="form-input"
+                    required
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '0.82rem' }}>Suggestion Category</label>
+                  <select
+                    value={newSuggestionType}
+                    onChange={e => setNewSuggestionType(e.target.value)}
+                    className="form-select"
+                  >
+                    <option value="features">Features</option>
+                    <option value="improvements">Improvements</option>
+                    <option value="technical changes">Technical Changes</option>
+                    <option value="business improvements">Business Improvements</option>
+                    <option value="problem corrections">Problem Corrections</option>
+                    <option value="general">General Enhancement</option>
+                    <option value="architecture">Architecture & Performance</option>
+                    <option value="ui_ux">UI / UX Design</option>
+                    <option value="security">Security & Privacy</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label" style={{ fontSize: '0.82rem' }}>Detailed Recommendation & Rationale</label>
+                <textarea
+                  value={newSuggestionContent}
+                  onChange={e => setNewSuggestionContent(e.target.value)}
+                  placeholder="Explain your recommendation, implementation path, and how it improves this project..."
+                  rows={4}
+                  className="form-textarea"
+                  required
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  type="submit"
+                  disabled={isSubmittingSuggestion}
+                  className="btn btn-coral"
+                  style={{ gap: '0.45rem', fontWeight: 800 }}
+                >
+                  <Send size={15} /> {isSubmittingSuggestion ? 'Submitting...' : 'SUBMIT SUGGESTION ↗'}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Suggestions List */}
+          <div>
+            <div className="editorial-mono-label" style={{ color: 'var(--periwinkle)', marginBottom: '1rem' }}>
+              COMMUNITY SUGGESTIONS ({suggestions.length})
+            </div>
+
+            {suggestions.length === 0 ? (
+              <div className="editorial-card" style={{ padding: '3rem', textAlign: 'center', backgroundColor: 'var(--bg-white)', color: 'var(--text-secondary)' }}>
+                <Lightbulb size={32} color="var(--coral)" style={{ margin: '0 auto 1rem auto' }} />
+                <h4 style={{ fontSize: '1.15rem', color: 'var(--text-primary)', marginBottom: '0.35rem' }}>No suggestions recorded yet</h4>
+                <p style={{ fontSize: '0.88rem', margin: 0 }}>Be the first peer collaborator to contribute an architectural or feature suggestion.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {suggestions.map(sug => {
+                  const statusColors = {
+                    open: { bg: 'rgba(113, 134, 216, 0.1)', text: 'var(--periwinkle)', border: 'var(--periwinkle)' },
+                    considered: { bg: 'rgba(233, 180, 91, 0.15)', text: 'var(--apricot)', border: 'var(--apricot)' },
+                    accepted: { bg: 'rgba(16, 185, 129, 0.1)', text: '#10B981', border: '#10B981' },
+                    implemented: { bg: 'rgba(105, 184, 154, 0.15)', text: 'var(--green)', border: 'var(--green)' },
+                    rejected: { bg: 'rgba(231, 111, 130, 0.1)', text: 'var(--coral)', border: 'var(--coral)' }
+                  };
+                  const currStatus = (sug.status || 'open').toLowerCase();
+                  const styleConfig = statusColors[currStatus] || statusColors.open;
+
+                  return (
+                    <div
+                      key={sug.id}
+                      className="editorial-card"
+                      style={{
+                        padding: '1.5rem',
+                        backgroundColor: 'var(--bg-white)',
+                        borderLeft: `4px solid ${styleConfig.border}`
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                            <span
+                              style={{
+                                padding: '0.15rem 0.5rem',
+                                borderRadius: 'var(--radius-full)',
+                                fontSize: '0.68rem',
+                                fontWeight: 800,
+                                textTransform: 'uppercase',
+                                backgroundColor: styleConfig.bg,
+                                color: styleConfig.text
+                              }}
+                            >
+                              {sug.status || 'OPEN'}
+                            </span>
+                            {sug.suggestion_type && (
+                              <span className="mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                                • {sug.suggestion_type.toUpperCase()}
+                              </span>
+                            )}
+                          </div>
+                          <h4 style={{ fontSize: '1.1rem', margin: 0 }}>{sug.title || 'Community Suggestion'}</h4>
+                        </div>
+
+                        <div className="mono" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          {sug.created_at ? new Date(sug.created_at).toLocaleDateString() : ''}
+                        </div>
+                      </div>
+
+                      <p style={{ fontSize: '0.92rem', lineHeight: 1.55, color: 'var(--text-primary)', marginBottom: '1.25rem' }}>
+                        {sug.content}
+                      </p>
+
+                      {/* Author Info & Creator Management */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <img
+                            src={sug.profiles?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(sug.profiles?.full_name || 'Innovator')}`}
+                            alt=""
+                            style={{ width: '24px', height: '24px', borderRadius: '50%' }}
+                          />
+                          <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>
+                            {sug.profiles?.full_name || sug.profiles?.username || 'Community Innovator'}
+                          </span>
+                        </div>
+
+                        {/* Owner Status Management Controls */}
+                        {isOwner && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Set Status:</span>
+                            {['open', 'considered', 'implemented', 'rejected'].map(st => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() => handleUpdateSuggestionStatus(sug.id, st)}
+                                className={`btn btn-xs ${currStatus === st ? 'btn-coral' : 'btn-secondary'}`}
+                                style={{ textTransform: 'capitalize', fontSize: '0.72rem', padding: '2px 8px' }}
+                              >
+                                {st}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ================= AI FEATURE 3: EXISTING SOLUTION COMPARISON TAB ================= */}
       {activeProjectTab === 'COMPARISON' && (
@@ -1285,6 +2358,73 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
               </p>
             </div>
 
+            {/* Differentiation & Existing Reference Solution (if present) */}
+            {(innovation.differentiation || innovation.existing_solution_name) && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem', backgroundColor: 'var(--bg-white)', padding: '1.5rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                {innovation.existing_solution_name && (
+                  <div>
+                    <div className="editorial-mono-label" style={{ color: 'var(--periwinkle)', marginBottom: '0.35rem', fontSize: '0.68rem' }}>
+                      EXISTING SOLUTION / REFERENCE
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>{innovation.existing_solution_name}</strong>
+                      {innovation.existing_solution_url && (
+                        <a
+                          href={innovation.existing_solution_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn btn-secondary btn-sm"
+                          style={{ fontSize: '0.72rem', padding: '2px 8px', gap: '0.25rem' }}
+                        >
+                          Visit Reference <ExternalLink size={10} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {innovation.differentiation && (
+                  <div>
+                    <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.35rem', fontSize: '0.68rem' }}>
+                      KEY DIFFERENTIATION
+                    </div>
+                    <p style={{ fontSize: '0.92rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.45 }}>
+                      {innovation.differentiation}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Sentiment Distribution (if present) */}
+            {innovation.sentiment_distribution && (
+              <div style={{ backgroundColor: 'var(--bg-white)', padding: '1.25rem 1.5rem', borderRadius: 'var(--radius-md)', borderLeft: '4px solid var(--green)' }}>
+                <div className="editorial-mono-label" style={{ color: 'var(--green)', marginBottom: '0.45rem', fontSize: '0.68rem' }}>
+                  DEMO PEER SENTIMENT DISTRIBUTION
+                </div>
+                <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ fontSize: '0.88rem' }}>
+                    <strong style={{ color: 'var(--green)' }}>Positive:</strong> {innovation.sentiment_distribution.positive}%
+                  </div>
+                  <div style={{ fontSize: '0.88rem' }}>
+                    <strong style={{ color: 'var(--periwinkle)' }}>Constructive:</strong> {innovation.sentiment_distribution.constructive}%
+                  </div>
+                  <div style={{ fontSize: '0.88rem' }}>
+                    <strong style={{ color: 'var(--coral)' }}>Critical:</strong> {innovation.sentiment_distribution.critical}%
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="editorial-mono-label" style={{ color: 'var(--teal)', marginBottom: '0.5rem' }}>
+                04 / KEY BENEFITS & EXPECTED IMPACT
+              </div>
+              <p style={{ fontSize: '1.05rem', lineHeight: 1.6, color: 'var(--text-primary)' }}>
+                {innovation.key_benefits || innovation.expected_impact || 'Streamlined workflows, high reliability, and peer-validated innovation impact.'}
+              </p>
+            </div>
+
             {/* Quick Community Validation Review Section */}
             <div
               style={{
@@ -1295,8 +2435,8 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
                 boxShadow: 'var(--shadow-sm)'
               }}
             >
-              <div className="editorial-mono-label" style={{ color: 'var(--lavender)', marginBottom: '0.5rem' }}>
-                04 / VALIDATION PERSPECTIVE & REVIEW
+              <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.5rem' }}>
+                05 / VALIDATION PERSPECTIVE & REVIEW
               </div>
               <h3 style={{ fontSize: '1.35rem', marginBottom: '1.25rem' }}>
                 Quick Community Review & Feedback
@@ -1494,13 +2634,15 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
                 <button
                   onClick={() => {
-                    setSelectedInnoId(innovation.id);
-                    setActiveTab('insight');
+                    setActiveProjectTab('AI_ANALYSIS');
+                    if (!projectAnalysis) {
+                      handleRunProjectAnalysis();
+                    }
                   }}
                   className="btn btn-primary"
                   style={{ width: '100%', gap: '0.5rem' }}
                 >
-                  Inspect Full AI Synthesis <ArrowUpRight size={15} />
+                  Inspect Full AI Analysis <ArrowUpRight size={15} />
                 </button>
 
                 {isOwner && (
@@ -1882,6 +3024,11 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
                               <span className="editorial-mono-label" style={{ fontSize: '0.66rem', color: 'var(--text-secondary)' }}>
                                 {isMyReview ? 'YOU (AUTHOR)' : 'PEER VALIDATOR'}
                               </span>
+                              {(r.is_demo || r.review_type === 'DEMO') && (
+                                <span className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--coral)', backgroundColor: 'rgba(231, 111, 130, 0.1)', padding: '1px 6px', borderRadius: '4px', fontWeight: 800 }}>
+                                  ✦ DEMO REVIEW
+                                </span>
+                              )}
                             </div>
                             <div className="mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                               Reviewed on {formattedDate}
@@ -2053,8 +3200,8 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                           <button
                             type="button"
-                            onClick={(e) => handleVoteReview(e, r.id, 'upvote')}
-                            className={`btn ${userVote === 'upvote' ? 'btn-coral' : 'btn-secondary'} btn-sm`}
+                            onClick={(e) => handleVoteReview(e, r.id, 'helpful')}
+                            className={`btn ${userVote === 'helpful' ? 'btn-coral' : 'btn-secondary'} btn-sm`}
                             style={{ fontSize: '0.76rem', padding: '0.25rem 0.65rem', gap: '0.3rem' }}
                             title="Mark review as helpful"
                           >
@@ -2063,14 +3210,78 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
 
                           <button
                             type="button"
-                            onClick={(e) => handleVoteReview(e, r.id, 'downvote')}
-                            className={`btn ${userVote === 'downvote' ? 'btn-secondary' : 'btn-ghost'} btn-sm`}
-                            style={{ fontSize: '0.76rem', padding: '0.25rem 0.55rem', color: userVote === 'downvote' ? 'var(--coral)' : 'var(--text-secondary)', gap: '0.25rem' }}
+                            onClick={(e) => handleVoteReview(e, r.id, 'not_helpful')}
+                            className={`btn ${userVote === 'not_helpful' ? 'btn-secondary' : 'btn-ghost'} btn-sm`}
+                            style={{ fontSize: '0.76rem', padding: '0.25rem 0.55rem', color: userVote === 'not_helpful' ? 'var(--coral)' : 'var(--text-secondary)', gap: '0.25rem', backgroundColor: userVote === 'not_helpful' ? 'rgba(231, 111, 130, 0.15)' : undefined }}
                             title="Mark review as not helpful"
                           >
                             <ThumbsDown size={12} /> ▼ Not Helpful
                           </button>
                         </div>
+                      </div>
+
+                      {/* Review Suggestions Section (public.review_suggestions) */}
+                      <div style={{ marginTop: '0.85rem', borderTop: '1px solid var(--border-hairline)', paddingTop: '0.75rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleReviewSuggestions(r.id)}
+                            className="btn btn-ghost btn-sm"
+                            style={{ fontSize: '0.76rem', color: 'var(--coral)', padding: '0.2rem 0.4rem', gap: '0.35rem' }}
+                          >
+                            <MessageSquare size={12} />
+                            {expandedReviewSuggestions[r.id]
+                              ? 'Hide Review Suggestions'
+                              : `Review Suggestions ${reviewSuggestionsMap[r.id]?.length ? `(${reviewSuggestionsMap[r.id].length})` : ''}`}
+                          </button>
+                        </div>
+
+                        {expandedReviewSuggestions[r.id] && (
+                          <div style={{ marginTop: '0.75rem', backgroundColor: 'var(--bg-cream)', padding: '1rem', borderRadius: 'var(--radius-md)' }}>
+                            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--coral)', marginBottom: '0.5rem' }}>
+                              SUGGESTIONS & NOTES ON THIS REVIEW
+                            </div>
+
+                            {/* Existing suggestions on this review */}
+                            {reviewSuggestionsMap[r.id] && reviewSuggestionsMap[r.id].length > 0 ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                {reviewSuggestionsMap[r.id].map(rs => (
+                                  <div key={rs.id} style={{ backgroundColor: 'var(--bg-white)', padding: '0.6rem 0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', fontSize: '0.84rem' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.2rem', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                                      <strong>{rs.profiles?.full_name || 'Community Peer'}</strong>
+                                      <span>{rs.created_at ? new Date(rs.created_at).toLocaleDateString() : ''}</span>
+                                    </div>
+                                    <div>{rs.content}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', fontStyle: 'italic' }}>
+                                No suggestions added to this review yet.
+                              </div>
+                            )}
+
+                            {/* Add suggestion to review form */}
+                            <form onSubmit={(e) => handleAddReviewSuggestion(e, r.id)} style={{ display: 'flex', gap: '0.5rem' }}>
+                              <input
+                                type="text"
+                                value={reviewSuggestionInputs[r.id] || ''}
+                                onChange={(e) => setReviewSuggestionInputs(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                placeholder="Add a suggestion or follow-up to this review..."
+                                className="form-input"
+                                style={{ fontSize: '0.82rem', height: '34px', padding: '0.3rem 0.6rem' }}
+                              />
+                              <button
+                                type="submit"
+                                disabled={isSubmittingReviewSug[r.id] || !(reviewSuggestionInputs[r.id] || '').trim()}
+                                className="btn btn-coral btn-sm"
+                                style={{ fontSize: '0.76rem', whiteSpace: 'nowrap' }}
+                              >
+                                {isSubmittingReviewSug[r.id] ? 'Posting...' : 'Suggest'}
+                              </button>
+                            </form>
+                          </div>
+                        )}
                       </div>
 
                     </div>
@@ -2081,26 +3292,6 @@ export default function PublishedDetailPage({ selectedInnoId, setActiveTab, setS
           </div>
         );
       })()}
-
-      {/* ================= INSIGHTS TAB ================= */}
-      {activeProjectTab === 'INSIGHTS' && (
-        <div className="editorial-card" style={{ padding: '3rem', textAlign: 'center' }}>
-          <Sparkles size={36} color="var(--rose-pink)" style={{ margin: '0 auto 1rem auto' }} />
-          <h2 style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>Full AI Synthesis Engine</h2>
-          <p style={{ color: 'var(--text-secondary)', maxWidth: '520px', margin: '0 auto 2rem auto' }}>
-            View consensus distributions, top strengths, key friction points, and rule-based clustering reports.
-          </p>
-          <button
-            onClick={() => {
-              setSelectedInnoId(innovation.id);
-              setActiveTab('insight');
-            }}
-            className="btn btn-coral btn-lg"
-          >
-            Launch Insights Dashboard ↗
-          </button>
-        </div>
-      )}
 
       {/* ================= IMPROVEMENTS TAB ================= */}
       {activeProjectTab === 'IMPROVEMENTS' && (

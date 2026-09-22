@@ -157,10 +157,10 @@ export default function CreatorDashboardPage({ setActiveTab, setSelectedInnoId }
       <div className="filter-chip-group" style={{ marginBottom: '2rem' }}>
         {[
           { id: 'ALL', label: `All Projects (${myInnovations.length})` },
-          { id: 'VALIDATING', label: `Validating (${myInnovations.filter(i => i.status === 'UNDER_VALIDATION' && i.status !== 'PUBLISHED').length})` },
-          { id: 'READY', label: `Ready to Launch (${myInnovations.filter(i => (i.valid_reviews_count >= (i.validation_target || 10) || i.status === 'VALIDATION_COMPLETE') && i.status !== 'PUBLISHED').length})` },
-          { id: 'PUBLISHED', label: `Published (${myInnovations.filter(i => i.status === 'PUBLISHED').length})` },
-          { id: 'DRAFTS', label: `Drafts (${myInnovations.filter(i => i.status === 'DRAFT').length})` }
+          { id: 'VALIDATING', label: `Validating (${myInnovations.filter(i => { const s = (i.status || '').toLowerCase(); const ls = (i.launch_status || '').toLowerCase(); return s === 'under_validation' || s === 'published' || ls === 'validating'; }).length})` },
+          { id: 'READY', label: `Ready to Launch (${myInnovations.filter(i => { const s = (i.status || '').toLowerCase(); const ls = (i.launch_status || '').toLowerCase(); return s === 'validation_complete' || ls === 'ready_to_launch' || (i.valid_reviews_count >= (i.validation_target || 10)); }).length})` },
+          { id: 'PUBLISHED', label: `Published (${myInnovations.filter(i => { const s = (i.status || '').toLowerCase(); const ls = (i.launch_status || '').toLowerCase(); return s === 'published' || ls === 'published'; }).length})` },
+          { id: 'DRAFTS', label: `Drafts (${myInnovations.filter(i => { const s = (i.status || '').toLowerCase(); const ls = (i.launch_status || '').toLowerCase(); return s === 'draft' || ls === 'draft'; }).length})` }
         ].map(tab => (
           <button
             key={tab.id}
@@ -285,18 +285,7 @@ export default function CreatorDashboardPage({ setActiveTab, setSelectedInnoId }
                     className="btn btn-primary btn-sm"
                     style={{ gap: '0.45rem' }}
                   >
-                    View Feedback ({item.valid_reviews_count || 0}) <ArrowUpRight size={14} />
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setSelectedInnoId(item.id);
-                      setActiveTab('insight');
-                    }}
-                    className="btn btn-secondary btn-sm"
-                    style={{ gap: '0.4rem' }}
-                  >
-                    <FileText size={13} color="var(--rose-pink)" /> AI Insights Report
+                    View Specimen & Feedback ({item.valid_reviews_count || 0}) <ArrowUpRight size={14} />
                   </button>
 
                   <div style={{ display: 'flex', gap: '0.35rem', justifyContent: 'center', marginTop: '0.2rem' }}>

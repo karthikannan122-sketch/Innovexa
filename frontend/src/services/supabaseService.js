@@ -3,72 +3,142 @@ import { StorageService, notifyDataChange } from './storage.js';
 import { cleanProjectTitle } from '../utils/textUtils.js';
 
 /**
- * SupabaseService — Comprehensive Real Supabase Data Layer for INNOVEXA
+ * SupabaseService — Comprehensive Database Service Layer for INNOVEXA
  * 
- * Handles real asynchronous CRUD operations against Supabase tables:
- * - categories
- * - projects
- * - project_likes (and upvotes)
- * - reviews
- * - notifications
- * - profiles
+ * Implements strict, typed operations for all 15 tables in the new Supabase architecture:
+ * 1. profiles
+ * 2. user_private_data
+ * 3. categories
+ * 4. projects
+ * 5. project_votes
+ * 6. project_suggestions
+ * 7. reviews
+ * 8. review_suggestions
+ * 9. review_votes
+ * 10. community_posts
+ * 11. community_comments
+ * 12. community_votes
+ * 13. messages
+ * 14. notifications
+ * 15. project_follows
  */
+const isUUID = (val) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(val || ''));
+
+// ============================================================================
+// HIGH-SPEED IN-MEMORY TTL QUERY CACHE FOR 0ms PAGE SWITCHING
+// ============================================================================
+const _supabaseCache = new Map();
+const DEFAULT_CACHE_TTL = 30000; // 30 seconds
+
+export function getCachedQuery(key) {
+  const item = _supabaseCache.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expiry) {
+    _supabaseCache.delete(key);
+    return null;
+  }
+  return item.data;
+}
+
+export function setCachedQuery(key, data, ttlMs = DEFAULT_CACHE_TTL) {
+  if (data === undefined || data === null) return;
+  _supabaseCache.set(key, {
+    data,
+    expiry: Date.now() + ttlMs
+  });
+}
+
+export function invalidateSupabaseCache(prefix = '') {
+  if (!prefix) {
+    _supabaseCache.clear();
+    return;
+  }
+  for (const key of _supabaseCache.keys()) {
+    if (key.startsWith(prefix) || key.includes(prefix)) {
+      _supabaseCache.delete(key);
+    }
+  }
+}
+
+// Invalidate on data change notifications
+if (typeof window !== 'undefined') {
+  window.addEventListener('innovexa:datachange', (e) => {
+    const entity = e?.detail?.entity;
+    if (entity) {
+      invalidateSupabaseCache(entity);
+    } else {
+      invalidateSupabaseCache();
+    }
+  });
+}
 
 export const SupabaseService = {
+  // Invalidation helper exposed on service
+  clearCache(prefix = '') {
+    invalidateSupabaseCache(prefix);
+  },
+
   // ============================================================================
-  // 1. CATEGORIES
+  // AUTH & USER HELPERS
   // ============================================================================
-  async getCategories() {
+  async getCurrentUser() {
     try {
-      const { data, error } = await supabase
-        .from('categories')
-        .select('*')
-        .order('name', { ascending: true });
-
-      if (error) {
-        console.warn('[Supabase categories fetch error]:', error.message || error);
-        return { data: StorageService.getCategories(), error: null };
-      }
-
-      if (data && data.length > 0) {
-        // Save to local cache for instant zero-latency UI renders
-        try {
-          localStorage.setItem('innovexa_categories_v2', JSON.stringify(data));
-        } catch (e) {}
-        return { data, error: null };
-      }
-
-      return { data: StorageService.getCategories(), error: null };
-    } catch (err) {
-      console.warn('[Supabase categories exception]:', err);
-      return { data: StorageService.getCategories(), error: null };
+      const { data: { user }, error } = await supabase.auth.getUser();
+      if (error || !user) return null;
+      return user;
+    } catch (e) {
+      console.warn('[Supabase getCurrentUser exception]:', e);
+      return null;
     }
   },
 
   // ============================================================================
-  // PROFILES (public.profiles)
+  // 1. PROFILES (public.profiles)
   // ============================================================================
   async getProfiles() {
+    const cacheKey = 'profiles:all';
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
+
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .order('full_name', { ascending: true });
 
-      if (!error && Array.isArray(data)) {
-        return { data, error: null };
-      }
       if (error) {
-        console.warn('[Supabase getProfiles notice]:', error.message || error);
+        console.error('[Supabase getProfiles error]:', error.message || error);
+        const local = StorageService.getUsers() || [];
+        setCachedQuery(cacheKey, local, 15000);
+        return { data: local, error };
       }
+      const list = data || [];
+      setCachedQuery(cacheKey, list, 30000);
+      return { data: list, error: null };
     } catch (e) {
-      console.warn('[Supabase getProfiles exception]:', e);
+      console.error('[Supabase getProfiles exception]:', e);
+      const local = StorageService.getUsers() || [];
+      setCachedQuery(cacheKey, local, 15000);
+      return { data: local, error: e };
     }
-    return { data: [], error: null };
+  },
+
+  async getProfile(userId) {
+    return this.getProfileById(userId);
   },
 
   async getProfileById(userId) {
-    if (!userId) return { data: null, error: null };
+    if (!userId) return { data: null, error: 'User ID is required' };
+    const cacheKey = `profile:${userId}`;
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
+
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
+    if (!isUUID) {
+      const local = StorageService.getUserById(userId) || null;
+      if (local) setCachedQuery(cacheKey, local, 30000);
+      return { data: local, error: null };
+    }
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -76,37 +146,192 @@ export const SupabaseService = {
         .eq('id', userId)
         .maybeSingle();
 
-      if (!error && data) {
-        return { data, error: null };
+      if (error) {
+        const local = StorageService.getUserById(userId) || null;
+        if (local) setCachedQuery(cacheKey, local, 15000);
+        return { data: local, error };
       }
+      const resolved = data || StorageService.getUserById(userId) || null;
+      if (resolved) setCachedQuery(cacheKey, resolved, 30000);
+      return { data: resolved, error: null };
     } catch (e) {
-      console.warn('[Supabase getProfileById exception]:', e);
+      const local = StorageService.getUserById(userId) || null;
+      if (local) setCachedQuery(cacheKey, local, 15000);
+      return { data: local, error: e };
     }
-    return { data: null, error: null };
+  },
+
+  async updateProfile(userId, updates) {
+    if (!userId) return { data: null, error: 'User ID is required' };
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId)
+        .select()
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Supabase updateProfile error]:', error);
+        return { data: null, error };
+      }
+      return { data, error: null };
+    } catch (e) {
+      console.error('[Supabase updateProfile exception]:', e);
+      return { data: null, error: e };
+    }
   },
 
   // ============================================================================
-  // 2. PROJECTS (public.projects)
+  // 2. USER PRIVATE DATA (public.user_private_data)
+  // ============================================================================
+  async getUserPrivateData(userId) {
+    if (!userId) return { data: null, error: 'User ID is required' };
+    try {
+      const { data, error } = await supabase
+        .from('user_private_data')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Supabase getUserPrivateData error]:', error.message || error);
+        return { data: null, error };
+      }
+      return { data: data || null, error: null };
+    } catch (e) {
+      console.error('[Supabase getUserPrivateData exception]:', e);
+      return { data: null, error: e };
+    }
+  },
+
+  async updateUserPrivateData(userId, updates) {
+    if (!userId) return { data: null, error: 'User ID is required' };
+    try {
+      const { data, error } = await supabase
+        .from('user_private_data')
+        .upsert({
+          user_id: userId,
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Supabase updateUserPrivateData error]:', error);
+        return { data: null, error };
+      }
+      return { data, error: null };
+    } catch (e) {
+      console.error('[Supabase updateUserPrivateData exception]:', e);
+      return { data: null, error: e };
+    }
+  },
+
+  // ============================================================================
+  // 3. CATEGORIES (public.categories)
+  // ============================================================================
+  async getCategories() {
+    const cacheKey = 'categories:all';
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
+
+    try {
+      const { data, error } = await supabase
+        .from('categories')
+        .select('id, name, slug, description, icon, created_at')
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('[Supabase getCategories error]:', error.message || error);
+        const local = StorageService.getCategories() || [];
+        setCachedQuery(cacheKey, local, 15000);
+        return { data: local, error };
+      }
+
+      if (data && data.length > 0) {
+        setCachedQuery(cacheKey, data, 60000);
+        return { data, error: null };
+      }
+
+      const local = StorageService.getCategories() || [];
+      setCachedQuery(cacheKey, local, 60000);
+      return { data: local, error: null };
+    } catch (err) {
+      console.error('[Supabase getCategories exception]:', err);
+      const local = StorageService.getCategories() || [];
+      setCachedQuery(cacheKey, local, 15000);
+      return { data: local, error: err };
+    }
+  },
+
+  async getCategoryBySlug(slug) {
+    if (!slug) return { data: null, error: 'Slug is required' };
+    const cacheKey = `category:${slug}`;
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
+
+    try {
+      const { data, error } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('slug', slug)
+        .maybeSingle();
+
+      if (error) {
+        console.error(`[Supabase getCategoryBySlug error for ${slug}]:`, error);
+        return { data: null, error };
+      }
+      if (data) setCachedQuery(cacheKey, data, 60000);
+      return { data, error: null };
+    } catch (e) {
+      console.error('[Supabase getCategoryBySlug exception]:', e);
+      return { data: null, error: e };
+    }
+  },
+
+  // ============================================================================
+  // 4. PROJECTS (public.projects - 24 columns)
   // ============================================================================
   async getProjects(filters = {}) {
+    const cacheKey = `projects:${JSON.stringify(filters)}`;
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
+
     try {
       let query = supabase
         .from('projects')
         .select(`
           *,
-          categories (
+          categories:category_id (
             id,
             name,
-            slug
+            slug,
+            description,
+            icon
           ),
-          profiles (
+          profiles:user_id (
             id,
+            username,
             full_name,
-            avatar_url
+            avatar_url,
+            headline,
+            role,
+            reputation_points
           )
-        `)
-        .eq('status', 'published')
-        .order('created_at', { ascending: false });
+        `);
+
+      // Sorting - only use physical DB columns in Supabase SQL query (created_at)
+      const sortMode = (filters.sort_by || filters.sortBy || 'newest').toLowerCase();
+      if (sortMode === 'oldest') {
+        query = query.order('created_at', { ascending: true });
+      } else {
+        query = query.order('created_at', { ascending: false });
+      }
 
       if (filters.category_id && filters.category_id !== 'ALL') {
         query = query.eq('category_id', filters.category_id);
@@ -114,326 +339,544 @@ export const SupabaseService = {
       if (filters.user_id) {
         query = query.eq('user_id', filters.user_id);
       }
-      if (filters.status && filters.status !== 'published') {
+      if (filters.status && filters.status !== 'ALL') {
         query = query.eq('status', filters.status);
+      }
+      if (filters.project_type && filters.project_type !== 'ALL') {
+        query = query.ilike('project_type', filters.project_type);
+      }
+      if (filters.project_stage && filters.project_stage !== 'ALL') {
+        query = query.ilike('project_stage', filters.project_stage);
+      }
+      if (filters.innovation_type && filters.innovation_type !== 'ALL') {
+        query = query.ilike('innovation_type', filters.innovation_type);
+      }
+      if (filters.is_public !== undefined) {
+        query = query.eq('is_public', filters.is_public);
+      }
+      if (filters.public_only) {
+        query = query.neq('status', 'DRAFT').neq('status', 'draft');
+      }
+      if (filters.search && filters.search.trim()) {
+        const s = filters.search.trim();
+        query = query.or(`title.ilike.%${s}%,short_description.ilike.%${s}%,description.ilike.%${s}%,problem_statement.ilike.%${s}%,proposed_solution.ilike.%${s}%`);
       }
 
       const { data, error } = await query;
 
+      const filterLocalProjects = (items = []) => {
+        let res = [...items];
+        if (filters.category_id && filters.category_id !== 'ALL') {
+          res = res.filter(i => i.category_id === filters.category_id || i.category === filters.category_id);
+        }
+        if (filters.user_id) {
+          res = res.filter(i => i.user_id === filters.user_id || i.creator_id === filters.user_id);
+        }
+        if (filters.status && filters.status !== 'ALL') {
+          res = res.filter(i => (i.status || '').toUpperCase() === filters.status.toUpperCase());
+        }
+        if (filters.project_type && filters.project_type !== 'ALL') {
+          res = res.filter(i => (i.project_type || i.type || '').toLowerCase() === filters.project_type.toLowerCase());
+        }
+        if (filters.project_stage && filters.project_stage !== 'ALL') {
+          res = res.filter(i => (i.project_stage || i.stage || '').toLowerCase() === filters.project_stage.toLowerCase());
+        }
+        if (filters.innovation_type && filters.innovation_type !== 'ALL') {
+          res = res.filter(i => (i.innovation_type || '').toLowerCase() === filters.innovation_type.toLowerCase());
+        }
+        if (filters.is_public !== undefined) {
+          res = res.filter(i => filters.is_public ? i.is_public !== false : i.is_public === false);
+        }
+        if (filters.public_only) {
+          res = res.filter(i => (i.status || '').toUpperCase() !== 'DRAFT' && i.is_public !== false);
+        }
+        if (filters.search && filters.search.trim()) {
+          const s = filters.search.trim().toLowerCase();
+          res = res.filter(i => 
+            (i.title || '').toLowerCase().includes(s) ||
+            (i.short_description || i.description || '').toLowerCase().includes(s) ||
+            (i.problem_statement || '').toLowerCase().includes(s) ||
+            (i.proposed_solution || '').toLowerCase().includes(s) ||
+            (Array.isArray(i.tags) && i.tags.some(t => String(t).toLowerCase().includes(s))) ||
+            (typeof i.tags === 'string' && i.tags.toLowerCase().includes(s))
+          );
+        }
+
+        // Sorting for local fallback
+        if (sortMode === 'oldest') {
+          res.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+        } else if (sortMode === 'most_upvoted' || sortMode === 'most_liked') {
+          res.sort((a, b) => (b.upvotes_count || 0) - (a.upvotes_count || 0));
+        } else if (sortMode === 'most_downvoted') {
+          res.sort((a, b) => (b.downvotes_count || 0) - (a.downvotes_count || 0));
+        } else if (sortMode === 'most_reviewed') {
+          res.sort((a, b) => (b.valid_reviews_count || 0) - (a.valid_reviews_count || 0));
+        } else if (sortMode === 'highest_rated') {
+          res.sort((a, b) => (b.average_rating || 0) - (a.average_rating || 0));
+        } else {
+          res.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        }
+
+        return res;
+      };
+
       if (error) {
-        console.warn('[Supabase projects fetch error]:', error.message || error);
-        // Fallback to simple select if join issue occurs
-        const fallbackRes = await supabase.from('projects').select('*').order('created_at', { ascending: false });
-        if (!fallbackRes.error && fallbackRes.data) {
-          const projs = fallbackRes.data.map(item => ({
+        console.error('[Supabase getProjects error]:', error.message || error);
+        const local = filterLocalProjects(StorageService.getInnovations() || []);
+        setCachedQuery(cacheKey, local, 15000);
+        return { data: local, error };
+      }
+
+      if (data && Array.isArray(data)) {
+        // Enrich project objects with computed properties for backwards component compatibility
+        const enriched = data.map((item) => {
+          const author = item.profiles || {};
+          const cat = item.categories || {};
+          const cleanTitle = cleanProjectTitle(item.title);
+
+          return {
             ...item,
-            title: cleanProjectTitle(item.title),
+            title: cleanTitle,
             creator_id: item.user_id,
-            category_name: item.categories?.name || StorageService.getCategoryName(item.category_id) || 'Uncategorized',
-            creator_name: item.creator_name || 'Community Innovator',
+            creator_name: author.full_name || 'Community Innovator',
+            creator_avatar: author.avatar_url || '',
+            category_name: cat.name || item.category_name || 'Technology',
             valid_reviews_count: item.valid_reviews_count || 0,
-            upvotes_count: item.upvotes_count || 0
-          }));
-          return { data: projs, error: null };
-        }
-        return { data: StorageService.getInnovations(), error: null };
-      }
-
-      if (data && Array.isArray(data)) {
-        // Fetch like counts from project_likes table in Supabase
-        const likesCountMap = {};
-        try {
-          const { data: allLikes, error: allLikesErr } = await supabase.from('project_likes').select('project_id');
-          if (allLikesErr) {
-            console.error('[Supabase getProjects allLikes error]:', allLikesErr);
-          }
-          if (Array.isArray(allLikes)) {
-            allLikes.forEach(l => {
-              if (l.project_id) {
-                likesCountMap[l.project_id] = (likesCountMap[l.project_id] || 0) + 1;
-              }
-            });
-          }
-        } catch (e) {
-          console.error('[Supabase getProjects allLikes exception]:', e);
-        }
-
-        const enrichedProjects = data.map(item => {
-          const catName = item.categories?.name || StorageService.getCategoryName(item.category_id) || 'Uncategorized';
-          const creatorName = item.profiles?.full_name || item.creator_name || 'Community Innovator';
-          const creatorAvatar = item.profiles?.avatar_url || item.creator_avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(creatorName)}&backgroundColor=20212a,e76f82,7186d8`;
-          const upvotesCount = likesCountMap[item.id] !== undefined ? likesCountMap[item.id] : (item.upvotes_count || 0);
-
-          return {
-            ...item,
-            title: cleanProjectTitle(item.title),
-            creator_id: item.user_id,
-            creator_name: creatorName,
-            creator_avatar: creatorAvatar,
-            category_name: catName,
-            valid_reviews_count: item.valid_reviews_count || StorageService.getReviewsForInnovation(item.id).length || 0,
-            upvotes_count: upvotesCount
+            upvotes_count: item.upvotes_count || 0,
+            downvotes_count: item.downvotes_count || 0,
+            average_rating: item.average_rating || null,
+            innovation_type: item.innovation_type || item.innovationType || 'INCREMENTAL',
+            is_demo: false
           };
         });
 
-        // Sync to local storage map for zero-latency UI fallback
-        try {
-          const localList = StorageService.getInnovations();
-          const map = new Map();
-          enrichedProjects.forEach(item => map.set(item.id, item));
-          localList.forEach(item => {
-            if (!map.has(item.id)) map.set(item.id, item);
-          });
-          const merged = Array.from(map.values());
-          localStorage.setItem('innovexa_innovations_v2', JSON.stringify(merged));
-        } catch (e) {}
-
-        return { data: enrichedProjects, error: null };
-      }
-
-      return { data: StorageService.getInnovations(), error: null };
-    } catch (err) {
-      console.error('[Supabase projects exception]:', err);
-      return { data: StorageService.getInnovations(), error: null };
-    }
-  },
-
-  async getProjectById(id) {
-    if (!id) return { data: null, error: 'No project ID provided.' };
-
-    try {
-      const { data, error } = await supabase
-        .from('projects')
-        .select(`
-          *,
-          categories (
-            id,
-            name,
-            slug
-          ),
-          profiles (
-            id,
-            full_name,
-            avatar_url
-          )
-        `)
-        .eq('id', id)
-        .maybeSingle();
-
-      if (error) {
-        console.error('[Supabase projectById error]:', error.message || error);
-        return { data: StorageService.getInnovationById(id), error: null };
-      }
-
-      if (data) {
-        let dbLikes = data.upvotes_count || 0;
-        try {
-          const { count, error: countErr } = await supabase
-            .from('project_likes')
-            .select('*', { count: 'exact', head: true })
-            .eq('project_id', id);
-          if (countErr) {
-            console.error('[Supabase getProjectById count error]:', countErr);
-          }
-          if (typeof count === 'number') dbLikes = count;
-        } catch (e) {
-          console.error('[Supabase getProjectById count exception]:', e);
-        }
-
-        const catName = data.categories?.name || StorageService.getCategoryName(data.category_id) || 'Uncategorized';
-        const creatorName = data.profiles?.full_name || data.creator_name || 'Community Innovator';
-        const creatorAvatar = data.profiles?.avatar_url || data.creator_avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(creatorName)}&backgroundColor=20212a,e76f82,7186d8`;
-
-        const fullItem = {
-          ...data,
-          title: cleanProjectTitle(data.title),
-          creator_id: data.user_id,
-          creator_name: creatorName,
-          creator_avatar: creatorAvatar,
-          category_name: catName,
-          project_id: data.id,
-          valid_reviews_count: data.valid_reviews_count || StorageService.getReviewsForInnovation(data.id).length || 0,
-          upvotes_count: dbLikes
-        };
-        StorageService.updateInnovation(id, fullItem);
-        return { data: fullItem, error: null };
-      }
-
-      return { data: StorageService.getInnovationById(id), error: null };
-    } catch (err) {
-      console.warn('[Supabase projectById exception]:', err);
-      return { data: StorageService.getInnovationById(id), error: null };
-    }
-  },
-
-  async getUserProjects(userId) {
-    if (!userId) return { data: [], error: 'User ID is required.' };
-
-    try {
-      const { data, error } = await supabase
-        .from('projects')
-        .select(`
-          *,
-          profiles:user_id (id, full_name, avatar_url),
-          categories:category_id (id, name)
-        `)
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.warn('[Supabase user projects fetch error]:', error.message || error);
-        return { data: StorageService.getInnovationsByUserId(userId), error: null };
-      }
-
-      if (data && Array.isArray(data)) {
-        const likesCountMap = {};
-        try {
-          const { data: allLikes } = await supabase.from('project_likes').select('project_id');
-          if (Array.isArray(allLikes)) {
-            allLikes.forEach(l => {
-              if (l.project_id) {
-                likesCountMap[l.project_id] = (likesCountMap[l.project_id] || 0) + 1;
-              }
-            });
-          }
-        } catch (e) {}
-
-        const enriched = data.map(item => {
-          const dbLikes = likesCountMap[item.id] || 0;
-          const localStats = StorageService.getProjectVotes(item.id);
-          const upvotesCount = Math.max(dbLikes, localStats.upvotes || 0, item.upvotes_count || 0);
-
-          return {
-            ...item,
-            title: cleanProjectTitle(item.title),
-            creator_id: item.user_id,
-            creator_name: item.profiles?.full_name || item.creator_name || 'Community Innovator',
-            creator_avatar: item.profiles?.avatar_url || item.creator_avatar,
-            category_name: item.categories?.name || StorageService.getCategoryName(item.category_id) || 'Technology',
-            valid_reviews_count: item.valid_reviews_count || StorageService.getReviewsForInnovation(item.id).length || 0,
-            upvotes_count: upvotesCount
-          };
-        });
+        setCachedQuery(cacheKey, enriched, 25000);
         return { data: enriched, error: null };
       }
 
       return { data: [], error: null };
     } catch (err) {
-      console.warn('[Supabase user projects exception]:', err);
-      return { data: StorageService.getInnovationsByUserId(userId), error: null };
+      console.error('[Supabase getProjects exception]:', err);
+      try {
+        const raw = StorageService.getInnovations() || [];
+        let res = [...raw];
+        if (filters.category_id && filters.category_id !== 'ALL') {
+          res = res.filter(i => i.category_id === filters.category_id || i.category === filters.category_id);
+        }
+        if (filters.user_id) {
+          res = res.filter(i => i.user_id === filters.user_id || i.creator_id === filters.user_id);
+        }
+        if (filters.status && filters.status !== 'ALL') {
+          res = res.filter(i => (i.status || '').toUpperCase() === filters.status.toUpperCase());
+        }
+        if (filters.project_type && filters.project_type !== 'ALL') {
+          res = res.filter(i => (i.project_type || i.type || '').toLowerCase() === filters.project_type.toLowerCase());
+        }
+        if (filters.project_stage && filters.project_stage !== 'ALL') {
+          res = res.filter(i => (i.project_stage || i.stage || '').toLowerCase() === filters.project_stage.toLowerCase());
+        }
+        if (filters.innovation_type && filters.innovation_type !== 'ALL') {
+          res = res.filter(i => (i.innovation_type || '').toLowerCase() === filters.innovation_type.toLowerCase());
+        }
+        if (filters.is_public !== undefined) {
+          res = res.filter(i => filters.is_public ? i.is_public !== false : i.is_public === false);
+        }
+        if (filters.public_only) {
+          res = res.filter(i => (i.status || '').toUpperCase() !== 'DRAFT' && i.is_public !== false);
+        }
+        if (filters.search && filters.search.trim()) {
+          const s = filters.search.trim().toLowerCase();
+          res = res.filter(i => 
+            (i.title || '').toLowerCase().includes(s) ||
+            (i.short_description || i.description || '').toLowerCase().includes(s) ||
+            (i.problem_statement || '').toLowerCase().includes(s) ||
+            (i.proposed_solution || '').toLowerCase().includes(s) ||
+            (Array.isArray(i.tags) && i.tags.some(t => String(t).toLowerCase().includes(s))) ||
+            (typeof i.tags === 'string' && i.tags.toLowerCase().includes(s))
+          );
+        }
+        setCachedQuery(cacheKey, res, 15000);
+        return { data: res, error: err };
+      } catch {
+        return { data: StorageService.getInnovations() || [], error: err };
+      }
     }
   },
 
-  normalizeProjectType(type) {
-    if (!type) return 'idea';
-    const lower = String(type).trim().toLowerCase();
-    if (lower === 'product' || lower.includes('product')) return 'product';
-    if (lower === 'startup' || lower.includes('startup')) return 'startup';
-    return 'idea';
+  // getUserProjects — defined once below at section 4 (after getProjectById)
+  // Alias for backwards compatibility:
+  async getMyProjects_alias(userId) { return this.getUserProjects(userId); },
+
+  async getProject(idOrSlug) {
+    return this.getProjectById(idOrSlug);
   },
 
-  normalizeProjectStatus(status, asDraftOnly = false) {
-    if (asDraftOnly) return 'draft';
-    if (!status) return 'draft';
-    const lower = String(status).trim().toLowerCase();
-    if (lower === 'published' || lower === 'active' || lower === 'under_validation' || lower === 'validating' || lower === 'live') {
-      return 'published';
+  async getProjectById(idOrSlug) {
+    if (!idOrSlug) return { data: null, error: 'Project ID or Slug is required' };
+    const cacheKey = `project:${idOrSlug}`;
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
+
+    try {
+      let query = supabase
+        .from('projects')
+        .select(`
+          *,
+          categories:category_id (
+            id,
+            name,
+            slug,
+            description,
+            icon
+          ),
+          profiles:user_id (
+            id,
+            username,
+            full_name,
+            avatar_url,
+            headline,
+            bio,
+            role,
+            reputation_points
+          )
+        `);
+
+      // Check if parameter is UUID or Slug
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug) || idOrSlug.startsWith('inno_');
+      if (isUUID) {
+        query = query.eq('id', idOrSlug);
+      } else {
+        query = query.or(`id.eq.${idOrSlug},slug.eq.${idOrSlug}`);
+      }
+
+      const { data, error } = await query.maybeSingle();
+
+      if (error) {
+        console.error(`[Supabase getProjectById error for ${idOrSlug}]:`, error.message || error);
+        const local = StorageService.getInnovationById(idOrSlug) || null;
+        if (local) setCachedQuery(cacheKey, local, 15000);
+        return { data: local, error };
+      }
+
+      if (data) {
+        // Fetch real-time live vote counts from project_votes
+        let liveUpvotes = 0;
+        let liveDownvotes = 0;
+        try {
+          const [upRes, downRes] = await Promise.all([
+            supabase.from('project_votes').select('id', { count: 'exact', head: true }).eq('project_id', data.id).eq('vote_type', 'upvote'),
+            supabase.from('project_votes').select('id', { count: 'exact', head: true }).eq('project_id', data.id).eq('vote_type', 'downvote')
+          ]);
+          if (typeof upRes.count === 'number') liveUpvotes = upRes.count;
+          if (typeof downRes.count === 'number') liveDownvotes = downRes.count;
+        } catch (e) {
+          console.warn('[Supabase getProjectById vote counts]:', e?.message || e);
+        }
+
+        const author = data.profiles || {};
+        const cat = data.categories || {};
+        const cleanTitle = cleanProjectTitle(data.title);
+
+        const project = {
+          ...data,
+          title: cleanTitle,
+          creator_id: data.user_id,
+          creator_name: author.full_name || 'Community Innovator',
+          creator_avatar: author.avatar_url || '',
+          category_name: cat.name || 'Technology',
+          upvotes_count: liveUpvotes,
+          downvotes_count: liveDownvotes,
+          valid_reviews_count: data.valid_reviews_count || 0,
+          is_demo: false
+        };
+
+        setCachedQuery(cacheKey, project, 30000);
+        return { data: project, error: null };
+      }
+
+      const local = StorageService.getInnovationById(idOrSlug) || null;
+      if (local) setCachedQuery(cacheKey, local, 30000);
+      return { data: local, error: null };
+    } catch (err) {
+      console.error(`[Supabase getProjectById exception for ${idOrSlug}]:`, err);
+      const local = StorageService.getInnovationById(idOrSlug) || null;
+      if (local) setCachedQuery(cacheKey, local, 15000);
+      return { data: local, error: err };
     }
-    return 'draft';
+  },
+
+  async getMyProjects(userId) {
+    return this.getUserProjects(userId);
+  },
+
+  async getUserProjects(userId) {
+    if (!userId) return { data: [], error: 'User ID is required' };
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
+    if (!isUUID) {
+      const local = (StorageService.getInnovations() || []).filter(
+        i => i.user_id === userId || i.creator_id === userId
+      );
+      return { data: local, error: null };
+    }
+    return this.getProjects({ user_id: userId });
   },
 
   async createProject(projectData, currentUser) {
-    // 1. Verify authenticated user
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    const effectiveUser = user || currentUser;
+    let categoryId = projectData.category_id || null;
+
+    // 1. Verify authenticated Supabase user
+    let effectiveUser = (currentUser && typeof currentUser === 'object' && currentUser.id) 
+      ? currentUser 
+      : (typeof currentUser === 'string' && currentUser ? { id: currentUser } : null);
+
+    if (!effectiveUser) {
+      try {
+        const { data: authData, error: authErr } = await supabase.auth.getUser();
+        if (authErr) {
+          console.error('[Supabase createProject auth error]:', authErr);
+        }
+        if (authData?.user?.id) {
+          effectiveUser = authData.user;
+        }
+      } catch (e) {
+        console.warn('[Supabase createProject auth check exception]:', e);
+      }
+    }
+
+    if (!effectiveUser && projectData.user_id) {
+      effectiveUser = { id: projectData.user_id };
+    }
 
     if (!effectiveUser || !effectiveUser.id) {
-      return { data: null, error: new Error('You must be signed in to create a project.') };
+      const authErr = new Error('Authentication required: please sign in to create a project.');
+      console.error('[Supabase createProject error]:', authErr);
+      return { data: null, error: authErr };
     }
 
-    const title = (projectData.title || '').trim();
-    if (!title) {
-      return { data: null, error: new Error('Project title is required.') };
-    }
-
-    const desc = (projectData.description || projectData.short_description || projectData.problem_statement || title).trim();
-    if (!desc) {
-      return { data: null, error: new Error('Project description is required.') };
-    }
-
-    // Ensure profile row exists in public.profiles to satisfy FK constraint projects_user_id_fkey
     try {
-      const { data: profCheck } = await supabase.from('profiles').select('id').eq('id', effectiveUser.id).maybeSingle();
-      if (!profCheck) {
-        await supabase.from('profiles').upsert([{
-          id: effectiveUser.id,
-          full_name: effectiveUser.name || effectiveUser.full_name || 'Innovator',
-          avatar_url: effectiveUser.avatar || effectiveUser.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(effectiveUser.name || 'Innovator')}`,
-          onboarding_completed: true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }]);
+      // 2. Resolve Category UUID robustly against DB categories
+      const { data: dbCategories } = await supabase.from('categories').select('id, name, slug');
+      let resolvedCategoryName = projectData.category_name || 'Technology';
+
+      if (dbCategories && dbCategories.length > 0) {
+        const existingCat = dbCategories.find(c => c.id === categoryId);
+        if (existingCat) {
+          resolvedCategoryName = existingCat.name;
+        } else {
+          // Attempt match by name or slug
+          let match = null;
+          if (projectData.category_name) {
+            match = dbCategories.find(c => 
+              c.name.toLowerCase() === projectData.category_name.toLowerCase() || 
+              c.slug.toLowerCase() === projectData.category_name.toLowerCase()
+            );
+          }
+          if (match) {
+            categoryId = match.id;
+            resolvedCategoryName = match.name;
+          } else {
+            const defaultCat = dbCategories.find(c => c.slug === 'technology') || dbCategories[0];
+            categoryId = defaultCat.id;
+            resolvedCategoryName = defaultCat.name;
+          }
+        }
       }
-    } catch (profErr) {
-      console.warn('[Supabase profile auto-ensure notice]:', profErr);
-    }
 
-    // Map to exact PostgreSQL allowed check constraint values
-    const dbProjectType = this.normalizeProjectType(projectData.project_type || projectData.creation_type);
-    const dbStatus = this.normalizeProjectStatus(projectData.status, projectData.asDraftOnly);
-    const launchUrl = projectData.launch_url || projectData.website_url || projectData.demo_url || null;
+      const cleanTitle = cleanProjectTitle(projectData.title || 'Untitled Specimen');
+      const shortDesc = (projectData.short_description || projectData.description || projectData.problem_statement || cleanTitle).trim();
+      const fullDesc = (projectData.description || projectData.short_description || projectData.proposed_solution || cleanTitle).trim();
+      const projStatus = (projectData.status || (projectData.as_draft ? 'draft' : 'published')).toLowerCase();
+      const isPublic = projectData.is_public !== undefined ? Boolean(projectData.is_public) : (projStatus === 'published');
 
-    // Validate project_type is an exact valid PostgreSQL value: 'idea' | 'product' | 'startup'
-    const allowedTypes = ['idea', 'product', 'startup'];
-    if (!allowedTypes.includes(dbProjectType)) {
-      console.error('[Supabase createProject invalid project_type]:', dbProjectType);
-      return { data: null, error: new Error(`Invalid project type '${dbProjectType}'. Must be idea, product, or startup.`) };
-    }
+      // Generate clean unique slug
+      const baseSlug = cleanTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'innovation';
+      const randomSuffix = Math.random().toString(36).substring(2, 7);
+      const generatedSlug = `${baseSlug}-${randomSuffix}`;
 
-    // Validate status is an exact valid PostgreSQL value: 'draft' | 'review' | 'published'
-    const allowedStatuses = ['draft', 'review', 'published'];
-    if (!allowedStatuses.includes(dbStatus)) {
-      console.error('[Supabase createProject invalid status]:', dbStatus);
-      return { data: null, error: new Error(`Invalid status '${dbStatus}'. Must be draft, review, or published.`) };
-    }
+      // Normalize project_type: 'idea' | 'product' | 'startup' | 'prototype' | 'research'
+      const rawType = (projectData.project_type || projectData.creation_type || 'idea').toLowerCase();
+      const validTypes = ['idea', 'product', 'startup', 'prototype', 'research'];
+      const normalizedType = validTypes.includes(rawType) ? rawType : 'idea';
 
-    const isUUID = (str) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
-    let validCatId = null;
-    if (isUUID(projectData.category_id)) {
-      validCatId = projectData.category_id;
-    } else if (projectData.category_id) {
-      console.error('[Supabase createProject invalid category_id]:', projectData.category_id);
-      return { data: null, error: new Error(`Invalid category_id '${projectData.category_id}'. Must be a valid UUID.`) };
-    }
+      // Normalize project_stage to check constraint: 'idea' | 'concept' | 'prototype' | 'development' | 'testing' | 'launched'
+      const rawStage = (projectData.project_stage || 'idea').toLowerCase();
+      const validStages = ['idea', 'concept', 'prototype', 'development', 'testing', 'launched'];
+      let normalizedStage = 'idea';
+      if (validStages.includes(rawStage)) {
+        normalizedStage = rawStage;
+      } else if (rawStage === 'live' || rawStage === 'beta' || rawStage === 'mvp') {
+        normalizedStage = 'launched';
+      }
 
-    // Default to Technology category UUID if unassigned
-    if (!validCatId) {
-      validCatId = '93fe2938-c843-4fa4-8b01-b07d59990023';
-    }
+      const newProjectPayload = {
+        user_id: effectiveUser.id,
+        category_id: categoryId,
+        title: cleanTitle,
+        slug: projectData.slug || generatedSlug,
+        short_description: shortDesc,
+        description: fullDesc,
+        problem_statement: projectData.problem_statement ? projectData.problem_statement.trim() : null,
+        proposed_solution: projectData.proposed_solution ? projectData.proposed_solution.trim() : null,
+        project_type: normalizedType,
+        project_stage: normalizedStage,
+        innovation_type: (projectData.innovation_type || 'technical').toLowerCase(),
+        target_users: projectData.target_users ? projectData.target_users.trim() : null,
+        features: Array.isArray(projectData.features) ? projectData.features : [],
+        tags: Array.isArray(projectData.tags) ? projectData.tags : [],
+        cover_image: projectData.cover_image || null,
+        images: Array.isArray(projectData.images) ? projectData.images : (projectData.images ? [projectData.images] : []),
+        launch_url: projectData.launch_url || projectData.website_url || null,
+        demo_url: projectData.demo_url || null,
+        github_url: projectData.github_url || null,
+        status: projStatus,
+        is_public: isPublic
+      };
 
-    // Clean payload matching the Supabase public.projects table schema
-    const payload = {
-      user_id: effectiveUser.id,
-      title: title,
-      description: desc,
-      project_type: dbProjectType,
-      launch_url: launchUrl,
-      status: dbStatus,
-      category_id: validCatId
-    };
+      console.log('[CREATE PROJECT] Executing Supabase Insert with Payload:', {
+        user_id: newProjectPayload.user_id,
+        title: newProjectPayload.title,
+        category_id: newProjectPayload.category_id,
+        project_type: newProjectPayload.project_type,
+        project_stage: newProjectPayload.project_stage,
+        status: newProjectPayload.status
+      });
 
-    try {
+      // 3. Execute insertion in Supabase
       const { data, error } = await supabase
         .from('projects')
-        .insert([payload])
+        .insert([newProjectPayload])
         .select(`
           *,
-          categories (
+          categories:category_id (
+            id,
+            name,
+            slug,
+            description,
+            icon
+          ),
+          profiles:user_id (
+            id,
+            username,
+            full_name,
+            avatar_url,
+            headline,
+            role,
+            reputation_points
+          )
+        `)
+        .single();
+
+      if (error) {
+        console.error('[PROJECT INSERT ERROR]', error);
+        throw error;
+      }
+
+      if (!data || !data.id) {
+        throw new Error('Project was not created successfully: no project ID returned from Supabase.');
+      }
+
+      // 4. Verify project existence in Supabase
+      const { data: savedProject, error: fetchError } = await supabase
+        .from('projects')
+        .select(`
+          *,
+          categories:category_id (
+            id,
+            name,
+            slug,
+            description,
+            icon
+          ),
+          profiles:user_id (
+            id,
+            username,
+            full_name,
+            avatar_url,
+            headline,
+            role,
+            reputation_points
+          )
+        `)
+        .eq('id', data.id)
+        .single();
+
+      if (fetchError || !savedProject) {
+        console.error('[PROJECT VERIFICATION ERROR]', fetchError);
+        throw (fetchError || new Error('Project verification in database failed.'));
+      }
+
+      console.log('[PROJECT CREATED & VERIFIED IN SUPABASE]:', savedProject.id, savedProject.title);
+
+      // 5. Update local storage cache and notify subscribers
+      const author = savedProject.profiles || {};
+      const cat = savedProject.categories || {};
+      const finalProject = {
+        ...savedProject,
+        creator_id: savedProject.user_id,
+        creator_name: author.full_name || effectiveUser.name || effectiveUser.full_name || 'Innovator',
+        creator_avatar: author.avatar_url || effectiveUser.avatar || effectiveUser.avatar_url || '',
+        category_name: cat.name || resolvedCategoryName,
+        upvotes_count: savedProject.upvotes_count || 0,
+        downvotes_count: savedProject.downvotes_count || 0,
+        valid_reviews_count: savedProject.valid_reviews_count || 0
+      };
+
+      StorageService.addInnovation(finalProject);
+      notifyDataChange('projects');
+
+      return { data: finalProject, error: null };
+    } catch (err) {
+      console.error('[PROJECT SUBMISSION ERROR]:', err);
+      return { data: null, error: err };
+    }
+  },
+
+  async updateProject(projectId, updates, userId) {
+    if (!projectId) return { data: null, error: 'Project ID is required' };
+    
+    // Check owner authorization if userId is supplied
+    const existing = StorageService.getInnovationById(projectId);
+    if (existing && userId && existing.user_id && existing.user_id !== userId && existing.creator_id !== userId) {
+      const authErr = new Error('Unauthorized: only the project owner can update this project.');
+      console.warn(`[Supabase updateProject permission error for ${projectId}]:`, authErr.message);
+      return { data: null, error: authErr };
+    }
+
+    try {
+      // Whitelist only valid DB columns for projects table
+      const VALID_PROJECT_COLUMNS = new Set([
+        'id', 'user_id', 'category_id', 'title', 'slug', 'short_description', 'description',
+        'project_type', 'innovation_type', 'project_stage', 'status', 'problem_statement',
+        'proposed_solution', 'target_users', 'features', 'tags', 'images', 'cover_image',
+        'launch_url', 'demo_url', 'github_url', 'is_public'
+      ]);
+
+      const sanitizedUpdates = {};
+      for (const [k, v] of Object.entries(updates || {})) {
+        if (VALID_PROJECT_COLUMNS.has(k) && v !== undefined) {
+          sanitizedUpdates[k] = v;
+        }
+      }
+      sanitizedUpdates.updated_at = new Date().toISOString();
+
+      let query = supabase
+        .from('projects')
+        .update(sanitizedUpdates)
+        .eq('id', projectId);
+
+      if (userId) {
+        query = query.eq('user_id', userId);
+      }
+
+      const { data, error } = await query
+        .select(`
+          *,
+          categories:category_id (
             id,
             name,
             slug
           ),
-          profiles (
+          profiles:user_id (
             id,
             full_name,
             avatar_url
@@ -442,1879 +885,3032 @@ export const SupabaseService = {
         .single();
 
       if (error) {
-        console.error('[Supabase createProject error]:', error.message || error, error);
-        return { data: null, error: new Error(error.message || 'Failed to save project to Supabase.') };
+        throw error;
       }
 
-      // Sync into StorageService cache with full project attributes
-      const savedInno = {
-        ...projectData,
-        ...data,
-        id: data.id,
-        project_id: data.id,
-        user_id: effectiveUser.id,
-        creator_id: effectiveUser.id,
-        creator_name: effectiveUser.name || effectiveUser.full_name || 'Innovator',
-        creator_avatar: effectiveUser.avatar || effectiveUser.avatar_url || '',
-        category_name: projectData.category_name || StorageService.getCategoryName(validCatId) || 'Technology',
-        creation_type: (projectData.creation_type || dbProjectType).toUpperCase(),
-        innovation_type: (projectData.innovation_type || dbProjectType).toUpperCase(),
-        project_stage: projectData.project_stage || 'idea',
-        problem_statement: projectData.problem_statement || projectData.description || '',
-        proposed_solution: projectData.proposed_solution || projectData.description || '',
-        target_users: projectData.target_users || '',
-        status: dbStatus === 'published' ? 'UNDER_VALIDATION' : 'DRAFT'
-      };
-      StorageService.createInnovation(savedInno);
-      notifyDataChange('innovations');
+      StorageService.updateInnovation(projectId, data || updates);
+      notifyDataChange('projects');
 
-      return { data: savedInno, error: null };
+      return { data, error: null };
     } catch (err) {
-      console.error('[Supabase createProject exception]:', err);
-      return { data: null, error: new Error(err.message || 'Failed to communicate with Supabase.') };
+      console.warn(`[Supabase updateProject fallback for ${projectId}]:`, err.message || err);
+      try {
+        const updatedLocal = StorageService.updateInnovation(projectId, updates);
+        notifyDataChange('projects');
+        return { data: updatedLocal || { id: projectId, ...updates }, error: null };
+      } catch (e) {
+        return { data: null, error: err };
+      }
     }
   },
 
-  async updateProject(projectId, updates, currentUserId) {
-    if (!projectId) return { data: null, error: new Error('Project ID is required.') };
+  async deleteProject(projectId, userId) {
+    if (!projectId) return { data: null, error: 'Project ID is required' };
 
-    try {
-      const allowedPayload = {};
-      if (updates.title !== undefined) allowedPayload.title = cleanProjectTitle(updates.title);
-      if (updates.description !== undefined) allowedPayload.description = updates.description;
-      if (updates.launch_url !== undefined) allowedPayload.launch_url = updates.launch_url;
-      if (updates.category_id !== undefined) {
-        const isUUID = (str) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
-        if (isUUID(updates.category_id)) allowedPayload.category_id = updates.category_id;
-      }
-      if (updates.project_type !== undefined) allowedPayload.project_type = this.normalizeProjectType(updates.project_type);
-      if (updates.status !== undefined) allowedPayload.status = this.normalizeProjectStatus(updates.status);
-      allowedPayload.updated_at = new Date().toISOString();
-
-      let query = supabase
-        .from('projects')
-        .update(allowedPayload)
-        .eq('id', projectId);
-
-      if (currentUserId) {
-        query = query.eq('user_id', currentUserId);
-      }
-
-      const { data, error } = await query.select().maybeSingle();
-
-      if (error) {
-        console.warn('[Supabase updateProject error]:', error.message || error);
-      }
-
-      // Sync local storage
-      const localUpdated = StorageService.updateInnovation(projectId, updates);
-      notifyDataChange('innovations');
-
-      return { data: data || localUpdated, error: null };
-    } catch (err) {
-      console.warn('[Supabase updateProject exception]:', err);
-      const localUpdated = StorageService.updateInnovation(projectId, updates);
-      return { data: localUpdated, error: null };
+    // Check owner authorization if userId is supplied
+    const existing = StorageService.getInnovationById(projectId);
+    if (existing && userId && existing.user_id && existing.user_id !== userId && existing.creator_id !== userId) {
+      const authErr = new Error('Unauthorized: only the project owner can delete this project.');
+      console.warn(`[Supabase deleteProject permission error for ${projectId}]:`, authErr.message);
+      return { success: false, error: authErr };
     }
-  },
-
-  async deleteProject(projectId, currentUserId) {
-    if (!projectId) return { success: false, error: new Error('Project ID is required.') };
 
     try {
-      let query = supabase
-        .from('projects')
-        .delete()
-        .eq('id', projectId);
-
-      if (currentUserId) {
-        query = query.eq('user_id', currentUserId);
-      }
+      let query = supabase.from('projects').delete().eq('id', projectId);
+      if (userId) query = query.eq('user_id', userId);
 
       const { error } = await query;
-
       if (error) {
-        console.warn('[Supabase deleteProject error]:', error.message || error);
+        throw error;
       }
 
-      // Sync local storage
       StorageService.deleteInnovation(projectId);
-      notifyDataChange('innovations');
-
+      notifyDataChange('projects');
       return { success: true, error: null };
     } catch (err) {
-      console.warn('[Supabase deleteProject exception]:', err);
-      StorageService.deleteInnovation(projectId);
-      return { success: true, error: null };
-    }
-  },
-
-  // ============================================================================
-  // 3. PROJECT VOTING & LIKES (▲ UPVOTE / ▼ DOWNVOTE - 3 STATES)
-  // ============================================================================
-  async getUserProjectVote(projectId, userId) {
-    if (!projectId || !userId) return null;
-    try {
-      const { data, error } = await supabase
-        .from('project_likes')
-        .select('id, project_id, user_id')
-        .eq('project_id', projectId)
-        .eq('user_id', userId)
-        .maybeSingle();
-
-      if (error) {
-        console.error('[Supabase getUserProjectVote error]:', error);
-        return null;
-      }
-      if (data) return 'upvote';
-      return null;
-    } catch (e) {
-      console.error('[Supabase getUserProjectVote exception]:', e);
-      return null;
-    }
-  },
-
-  async hasUserLikedProject(projectId, userId) {
-    if (!projectId || !userId) return false;
-    try {
-      const { data, error } = await supabase
-        .from('project_likes')
-        .select('id, project_id, user_id')
-        .eq('project_id', projectId)
-        .eq('user_id', userId)
-        .maybeSingle();
-
-      if (error) {
-        console.error('[Supabase hasUserLikedProject error]:', error);
-        return false;
-      }
-      return Boolean(data);
-    } catch (e) {
-      console.error('[Supabase hasUserLikedProject exception]:', e);
-      return false;
-    }
-  },
-
-  async getProjectLikeCount(projectId) {
-    if (!projectId) return 0;
-    try {
-      const { count, data, error } = await supabase
-        .from('project_likes')
-        .select('id', { count: 'exact' })
-        .eq('project_id', projectId);
-
-      if (error) {
-        console.error('[Supabase getProjectLikeCount error]:', error);
-        return 0;
-      }
-      if (typeof count === 'number') {
-        return count;
-      }
-      if (Array.isArray(data)) {
-        return data.length;
-      }
-    } catch (e) {
-      console.error('[Supabase getProjectLikeCount exception]:', e);
-    }
-    return 0;
-  },
-
-  async getProjectVotes(projectId) {
-    if (!projectId) return { upvotes: 0, downvotes: 0, total: 0 };
-    try {
-      const { count, data, error } = await supabase
-        .from('project_likes')
-        .select('id', { count: 'exact' })
-        .eq('project_id', projectId);
-
-      if (error) {
-        console.error('[Supabase getProjectVotes error]:', error);
-        return { upvotes: 0, downvotes: 0, total: 0 };
-      }
-      const countNum = (typeof count === 'number') ? count : (Array.isArray(data) ? data.length : 0);
-      return {
-        upvotes: countNum,
-        downvotes: 0,
-        total: countNum
-      };
-    } catch (e) {
-      console.error('[Supabase getProjectVotes exception]:', e);
-      return { upvotes: 0, downvotes: 0, total: 0 };
-    }
-  },
-
-  async getProjectLikes(projectId) {
-    if (!projectId) return [];
-    try {
-      const { data, error } = await supabase
-        .from('project_likes')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error('[Supabase getProjectLikes error]:', error);
-        return [];
-      }
-      if (data && Array.isArray(data)) {
-        return data;
-      }
-      return [];
-    } catch (err) {
-      console.error('[Supabase getProjectLikes exception]:', err);
-      return [];
-    }
-  },
-
-  async voteProject({ projectId, userId, voteType = 'upvote', projectOwnerId, projectTitle, userName, userAvatar }) {
-    // 1. Get current authenticated user using supabase.auth.getUser()
-    let authUser = null;
-    try {
-      const { data: authData, error: authErr } = await supabase.auth.getUser();
-      if (authErr) {
-        console.error('[Supabase auth.getUser error]:', authErr);
-      }
-      authUser = authData?.user || null;
-    } catch (authException) {
-      console.error('[Supabase auth.getUser exception]:', authException);
-    }
-
-    const effectiveUserId = authUser?.id || userId;
-
-    // 2 & 12. Verify that project.id and user.id are never undefined before inserting
-    if (!projectId || typeof projectId !== 'string' || !projectId.trim() || !effectiveUserId || typeof effectiveUserId !== 'string' || !effectiveUserId.trim()) {
-      const validationError = new Error('Invalid project ID or user ID: both must be defined non-empty strings.');
-      console.error('[Supabase voteProject parameter validation error]:', validationError);
-      return { activeVoteType: null, upvotesCount: 0, downvotesCount: 0, error: validationError };
-    }
-
-    try {
-      // 3. Check public.project_likes for an existing row where project_id = projectId AND user_id = effectiveUserId
-      const { data: existingRows, error: checkErr } = await supabase
-        .from('project_likes')
-        .select('id, project_id, user_id')
-        .eq('project_id', projectId)
-        .eq('user_id', effectiveUserId);
-
-      if (checkErr) {
-        console.error('[Supabase check project_likes error]:', checkErr);
-        return { activeVoteType: null, upvotesCount: 0, downvotesCount: 0, error: checkErr };
-      }
-
-      const hasExistingRow = Array.isArray(existingRows) && existingRows.length > 0;
-      let activeVoteType = null;
-
-      if (!hasExistingRow) {
-        // 4. If no row exists, insert: { project_id: project.id, user_id: user.id }
-        const insertPayload = {
-          project_id: projectId,
-          user_id: effectiveUserId
-        };
-
-        const { error: insertErr } = await supabase
-          .from('project_likes')
-          .insert([insertPayload]);
-
-        if (insertErr) {
-          console.error('[Supabase insert project_likes error]:', insertErr);
-          return { activeVoteType: null, upvotesCount: 0, downvotesCount: 0, error: insertErr };
-        }
-        activeVoteType = voteType || 'upvote';
-      } else {
-        // 5. If a row already exists, delete that row so the Upvote button acts as a toggle
-        const { error: deleteErr } = await supabase
-          .from('project_likes')
-          .delete()
-          .eq('project_id', projectId)
-          .eq('user_id', effectiveUserId);
-
-        if (deleteErr) {
-          console.error('[Supabase delete project_likes error]:', deleteErr);
-          return { activeVoteType: null, upvotesCount: 0, downvotesCount: 0, error: deleteErr };
-        }
-        activeVoteType = null;
-      }
-
-      // 7. After every successful insert or delete, fetch the real vote count from Supabase
-      const { count: realCount, data: countData, error: countErr } = await supabase
-        .from('project_likes')
-        .select('id', { count: 'exact' })
-        .eq('project_id', projectId);
-
-      if (countErr) {
-        console.error('[Supabase fetch real count error]:', countErr);
-        return { activeVoteType, upvotesCount: 0, downvotesCount: 0, error: countErr };
-      }
-
-      const upvotesCount = (typeof realCount === 'number') ? realCount : (Array.isArray(countData) ? countData.length : 0);
-
-      // Sync projects table upvotes_count column and local storage cache
+      console.warn(`[Supabase deleteProject fallback for ${projectId}]:`, err.message || err);
       try {
-        await supabase
-          .from('projects')
-          .update({ upvotes_count: upvotesCount })
-          .eq('id', projectId);
-      } catch (projUpdateErr) {
-        console.error('[Supabase update projects upvotes_count exception]:', projUpdateErr);
+        StorageService.deleteInnovation(projectId);
+        notifyDataChange('projects');
+        return { success: true, error: null };
+      } catch (e) {
+        return { success: false, error: err };
+      }
+    }
+  },
+
+  async incrementProjectViewCount(projectId) {
+    if (!projectId) return;
+    try {
+      await supabase.rpc('increment_project_view_count', { p_project_id: projectId });
+    } catch (e) {
+      // Non-blocking telemetry
+    }
+  },
+
+  /**
+   * getProjectAnalytics — Phase 7 Project Insights and Real Database Telemetry
+   * Fetches real counts and rows from projects, project_votes, reviews,
+   * project_suggestions, and project_follows to calculate authoritative metrics.
+   */
+  async getProjectAnalytics(projectId) {
+    if (!projectId) {
+      return { data: null, error: 'Project ID is required for analytics' };
+    }
+
+    try {
+      // Parallel execution across all relevant tables
+      const [
+        projRes,
+        votesRes,
+        reviewsRes,
+        suggestionsRes,
+        followsRes
+      ] = await Promise.all([
+        supabase.from('projects').select('*, profiles:user_id(full_name, avatar_url), categories:category_id(name)').eq('id', projectId).maybeSingle(),
+        supabase.from('project_votes').select('vote_type, created_at').eq('project_id', projectId),
+        supabase.from('reviews').select('id, rating, problem_relevance, solution_effectiveness, market_potential, overall_feedback, helpful_votes_count, unhelpful_votes_count, is_valid, created_at').eq('project_id', projectId),
+        supabase.from('project_suggestions').select('id, suggestion_type, status, created_at').eq('project_id', projectId),
+        supabase.from('project_follows').select('id, created_at').eq('project_id', projectId)
+      ]);
+
+      let project = projRes.data;
+      let votes = votesRes.data || [];
+      let reviews = reviewsRes.data || [];
+      let suggestions = suggestionsRes.data || [];
+      let follows = followsRes.data || [];
+
+      // Fallback to local storage if Supabase returned null or in local mode
+      if (!project) {
+        project = StorageService.getInnovationById(projectId);
+      }
+      if (votes.length === 0) {
+        const localVotes = StorageService.getProjectVotes?.(projectId) || [];
+        if (localVotes.length > 0) votes = localVotes;
+      }
+      if (reviews.length === 0) {
+        const localRevs = StorageService.getReviewsForInnovation(projectId) || [];
+        if (localRevs.length > 0) reviews = localRevs;
+      }
+      if (suggestions.length === 0) {
+        const localSugg = StorageService.getSuggestionsByProject?.(projectId) || [];
+        if (localSugg.length > 0) suggestions = localSugg;
+      }
+      if (follows.length === 0) {
+        const localFollows = StorageService.getFollowersByProject?.(projectId) || [];
+        if (localFollows.length > 0) follows = localFollows;
       }
 
-      StorageService.updateInnovation(projectId, { upvotes_count: upvotesCount });
+      if (!project) {
+        return { data: null, error: `Project '${projectId}' not found` };
+      }
 
-      // Send notification if upvoted
-      if (activeVoteType === 'upvote' && projectOwnerId && projectOwnerId !== effectiveUserId) {
-        try {
-          await this.createNotification({
-            userId: projectOwnerId,
-            type: 'like',
-            title: 'Project Upvoted',
-            message: `${userName || 'An innovator'} upvoted your project "${projectTitle || 'Untitled'}".`,
-            projectId: projectId
-          });
-        } catch (notifErr) {
-          console.error('[Supabase notification error on upvote]:', notifErr);
+      // ================= COMPUTED METRICS =================
+      const views = Math.max(0, project.views_count || (project.views || 0));
+      
+      // Upvotes & Downvotes
+      const upvotes = votes.filter(v => (v.vote_type || v.type) === 'upvote').length || (project.upvotes_count || 0);
+      const downvotes = votes.filter(v => (v.vote_type || v.type) === 'downvote').length || (project.downvotes_count || 0);
+      const totalVotes = upvotes + downvotes;
+
+      // Reviews & Ratings
+      const reviewsCount = reviews.length;
+      const validRatings = reviews.map(r => Number(r.rating)).filter(n => !isNaN(n) && n >= 1 && n <= 5);
+      const averageRating = validRatings.length > 0
+        ? Number((validRatings.reduce((a, b) => a + b, 0) / validRatings.length).toFixed(2))
+        : 0;
+
+      // Helpful reviews (reviews that received helpful votes or positive review rating)
+      const helpfulReviewCount = reviews.filter(r => (r.helpful_votes_count || 0) > (r.unhelpful_votes_count || 0) || (r.helpful_votes_count || 0) > 0).length;
+      const totalHelpfulVotes = reviews.reduce((sum, r) => sum + (Number(r.helpful_votes_count) || 0), 0);
+
+      // Suggestions & Followers
+      const suggestionsCount = suggestions.length;
+      const followersCount = follows.length;
+
+      // Rating Distribution
+      const ratingDistribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+      validRatings.forEach(score => {
+        const rounded = Math.min(5, Math.max(1, Math.round(score)));
+        ratingDistribution[rounded] = (ratingDistribution[rounded] || 0) + 1;
+      });
+
+      // 1. Engagement Rate Calculation: total interactions divided by views
+      const totalInteractions = upvotes + downvotes + reviewsCount + suggestionsCount + followersCount;
+      const engagementRate = views > 0
+        ? Number(((totalInteractions / views) * 100).toFixed(1))
+        : (totalInteractions > 0 ? 100 : 0);
+
+      // 2. Vote Ratio Calculation: percentage of total votes that are upvotes
+      const voteRatio = totalVotes > 0
+        ? Number(((upvotes / totalVotes) * 100).toFixed(1))
+        : (upvotes > 0 ? 100 : 0);
+
+      // 3. Review Score Calculation: normalized composite review rating out of 100
+      const reviewScore = reviewsCount > 0
+        ? Math.min(100, Math.round((averageRating / 5) * 80 + Math.min(20, reviewsCount * 4)))
+        : 0;
+
+      // 4. Community Engagement Score: weighted composite interaction index
+      const communityEngagement = Math.round(
+        (upvotes * 2) +
+        (downvotes * 0.5) +
+        (reviewsCount * 5) +
+        (suggestionsCount * 4) +
+        (followersCount * 3) +
+        (totalHelpfulVotes * 1.5)
+      );
+
+      // Activity Timeline (Daily aggregations for trend charting)
+      const dateMap = {};
+      const recordEvent = (dateStr, type) => {
+        if (!dateStr) return;
+        const key = dateStr.slice(0, 10);
+        if (!dateMap[key]) {
+          dateMap[key] = { date: key, upvotes: 0, reviews: 0, suggestions: 0, follows: 0, total: 0 };
         }
-      }
+        if (type === 'upvote') dateMap[key].upvotes += 1;
+        if (type === 'review') dateMap[key].reviews += 1;
+        if (type === 'suggestion') dateMap[key].suggestions += 1;
+        if (type === 'follow') dateMap[key].follows += 1;
+        dateMap[key].total += 1;
+      };
 
-      notifyDataChange('innovations');
-      notifyDataChange('votes');
-      notifyDataChange('upvotes');
+      votes.forEach(v => recordEvent(v.created_at, v.vote_type));
+      reviews.forEach(r => recordEvent(r.created_at, 'review'));
+      suggestions.forEach(s => recordEvent(s.created_at, 'suggestion'));
+      follows.forEach(f => recordEvent(f.created_at, 'follow'));
+
+      const activityTimeline = Object.values(dateMap).sort((a, b) => a.date.localeCompare(b.date));
 
       return {
-        activeVoteType,
-        upvotesCount,
-        downvotesCount: 0,
+        data: {
+          project_id: project.id,
+          title: cleanProjectTitle(project.title),
+          category_name: project.categories?.name || project.category_name || 'Technology',
+          project_stage: project.project_stage || 'idea',
+          status: project.status || 'UNDER_VALIDATION',
+          created_at: project.created_at,
+          published_at: project.published_at || project.created_at,
+          creator_id: project.user_id,
+          creator_name: project.profiles?.full_name || project.creator_name || 'Innovator',
+          creator_avatar: project.profiles?.avatar_url || project.creator_avatar || '',
+          
+          // Primary Metrics from Supabase
+          views,
+          upvotes,
+          downvotes,
+          total_votes: totalVotes,
+          reviews_count: reviewsCount,
+          average_rating: averageRating,
+          helpful_review_count: helpfulReviewCount,
+          total_helpful_votes: totalHelpfulVotes,
+          suggestions_count: suggestionsCount,
+          followers_count: followersCount,
+          
+          // Calculated Strategic Metrics
+          engagement_rate: engagementRate,
+          vote_ratio: voteRatio,
+          review_score: reviewScore,
+          community_engagement: communityEngagement,
+          
+          // Data Breakdowns for Visuals
+          rating_distribution: ratingDistribution,
+          activity_timeline: activityTimeline,
+          
+          // Insufficient Data Safeguards
+          has_enough_vote_data: totalVotes > 0,
+          has_enough_review_data: reviewsCount > 0,
+          has_enough_engagement_data: totalInteractions > 0 || views > 0,
+          has_enough_timeline_data: activityTimeline.length >= 2,
+          has_enough_suggestions_data: suggestionsCount > 0,
+          has_enough_followers_data: followersCount > 0
+        },
         error: null
       };
     } catch (err) {
-      console.error('[Supabase voteProject error]:', err);
-      return {
-        activeVoteType: null,
-        upvotesCount: 0,
-        downvotesCount: 0,
-        error: err
-      };
+      console.error(`[Supabase getProjectAnalytics exception for ${projectId}]:`, err);
+      return { data: null, error: err };
     }
   },
 
-  async toggleVote({ userId, targetType, targetId, voteType = 'upvote', userName = 'Innovator', userAvatar = '' }) {
-    if (!userId || !targetType || !targetId) {
-      return { activeVoteType: null, upvotesCount: 0, downvotesCount: 0, error: new Error('User ID, target type, and target ID are required.') };
+  // ============================================================================
+  // 5. PROJECT VOTES (public.project_votes)
+  // ============================================================================
+  async voteProject({ projectId, userId, voteType = 'upvote' }) {
+    if (!projectId || !userId) {
+      const err = new Error('Project ID and User ID are required to vote.');
+      console.error('[Supabase voteProject error]:', err);
+      return { data: null, error: err };
     }
 
-    // 1. Separate Project Likes workflow
-    if (targetType === 'project') {
-      return this.voteProject({
-        projectId: targetId,
+    if (!isUUID(projectId) || !isUUID(userId)) {
+      const res = StorageService.toggleVote({
         userId,
-        voteType,
-        userName,
-        userAvatar
+        targetType: 'project',
+        targetId: projectId,
+        voteType
       });
+      const action = res?.activeVoteType ? (res.activeVoteType === voteType ? 'created' : 'updated') : 'removed';
+      return { data: { action, vote_type: res?.activeVoteType || null }, error: null };
     }
 
-    // 2. Synchronize local cache first for responsive UI
-    const localResult = StorageService.toggleVote({
-      userId,
-      targetType,
-      targetId,
-      voteType,
-      userName,
-      userAvatar
-    });
-
-    let activeVote = localResult.activeVoteType;
-    let upvotesCount = localResult.upvotesCount;
-    let downvotesCount = localResult.downvotesCount;
-    let dbError = null;
-
-    // 3. Persist to Supabase public.votes table (3-State Logic)
     try {
-      // Query existing vote in Supabase
-      const { data: existingVote, error: selectErr } = await supabase
-        .from('votes')
+      // 1. Check existing vote in Supabase
+      const { data: existingVote, error: fetchErr } = await supabase
+        .from('project_votes')
         .select('*')
+        .eq('project_id', projectId)
         .eq('user_id', userId)
-        .eq('target_type', targetType)
-        .eq('target_id', targetId)
         .maybeSingle();
 
-      if (selectErr && !selectErr.message?.includes('schema cache')) {
-        console.error(`[Supabase ${targetType} vote select error]:`, selectErr);
-        dbError = selectErr;
-      }
+      if (fetchErr) throw fetchErr;
 
       if (existingVote) {
         if (existingVote.vote_type === voteType) {
-          // SAME VOTE EXISTS -> DELETE / REMOVE VOTE
-          const { error: deleteErr } = await supabase
-            .from('votes')
+          // Toggle off: clicked same vote again -> remove vote
+          const { error: delErr } = await supabase
+            .from('project_votes')
             .delete()
             .eq('id', existingVote.id);
 
-          if (deleteErr) {
-            console.error(`[Supabase ${targetType} vote delete error]:`, deleteErr);
-            dbError = deleteErr;
-          } else {
-            activeVote = null;
-          }
+          if (delErr) throw delErr;
+          StorageService.toggleVote({ userId, targetType: 'project', targetId: projectId, voteType });
+          notifyDataChange('project_votes');
+          return { data: { action: 'removed', vote_type: null }, error: null };
         } else {
-          // OPPOSITE VOTE EXISTS -> UPDATE VOTE TYPE (e.g. downvote -> upvote)
-          const { error: updateErr } = await supabase
-            .from('votes')
+          // Switch vote: e.g. upvote -> downvote
+          const { data: updated, error: updateErr } = await supabase
+            .from('project_votes')
             .update({
               vote_type: voteType,
-              user_name: userName || 'Innovator',
-              user_avatar: userAvatar || '',
               updated_at: new Date().toISOString()
             })
-            .eq('id', existingVote.id);
+            .eq('id', existingVote.id)
+            .select()
+            .single();
 
-          if (updateErr) {
-            console.error(`[Supabase ${targetType} vote update error]:`, updateErr);
-            dbError = updateErr;
-          } else {
-            activeVote = voteType;
-          }
+          if (updateErr) throw updateErr;
+          StorageService.toggleVote({ userId, targetType: 'project', targetId: projectId, voteType });
+          notifyDataChange('project_votes');
+          return { data: { action: 'updated', vote_type: voteType, vote: updated }, error: null };
         }
       } else {
-        // NO VOTE -> INSERT NEW VOTE
-        const { error: insertErr } = await supabase
-          .from('votes')
+        // Insert new vote
+        const { data: newVote, error: insertErr } = await supabase
+          .from('project_votes')
           .insert([{
+            project_id: projectId,
             user_id: userId,
-            target_type: targetType,
-            target_id: targetId,
-            vote_type: voteType,
-            user_name: userName || 'Innovator',
-            user_avatar: userAvatar || '',
-            created_at: new Date().toISOString()
-          }]);
+            vote_type: voteType
+          }])
+          .select()
+          .single();
 
-        if (insertErr) {
-          console.error(`[Supabase ${targetType} vote insert error]:`, insertErr);
-          dbError = insertErr;
-        } else {
-          activeVote = voteType;
-        }
-      }
+        if (insertErr) throw insertErr;
 
-      // 4. Fetch updated vote counts from database if table exists
-      const { data: dbAllVotes, error: countErr } = await supabase
-        .from('votes')
-        .select('vote_type')
-        .eq('target_type', targetType)
-        .eq('target_id', targetId);
-
-      if (!countErr && Array.isArray(dbAllVotes)) {
-        upvotesCount = dbAllVotes.filter(v => v.vote_type === 'upvote').length;
-        downvotesCount = dbAllVotes.filter(v => v.vote_type === 'downvote').length;
+        StorageService.toggleVote({ userId, targetType: 'project', targetId: projectId, voteType });
+        notifyDataChange('project_votes');
+        return { data: { action: 'created', vote_type: voteType, vote: newVote }, error: null };
       }
     } catch (err) {
-      console.warn(`[Supabase ${targetType} voting notice]:`, err.message || err);
-      dbError = err;
+      console.warn('[Supabase voteProject fallback to storage]:', err.message || err);
+      const res = StorageService.toggleVote({
+        userId,
+        targetType: 'project',
+        targetId: projectId,
+        voteType
+      });
+      const action = res?.activeVoteType ? (res.activeVoteType === voteType ? 'created' : 'updated') : 'removed';
+      return { data: { action, vote_type: res?.activeVoteType || null }, error: null };
     }
-
-    notifyDataChange('votes');
-    if (targetType === 'review') notifyDataChange('reviews');
-    if (targetType === 'discussion') notifyDataChange('communityPosts');
-    if (targetType === 'comment') notifyDataChange('communityComments');
-    if (targetType === 'resource') notifyDataChange('communityResources');
-
-    return {
-      activeVoteType: activeVote,
-      upvotesCount,
-      downvotesCount,
-      error: dbError
-    };
   },
 
-  async getReviewVotes(reviewId, userId = null) {
-    if (!reviewId) return { activeVoteType: null, upvotesCount: 0, downvotesCount: 0 };
-
+  async removeProjectVote(projectId, userId) {
+    if (!projectId || !userId) return { success: false, error: 'Project ID and User ID required' };
+    if (!isUUID(projectId) || !isUUID(userId)) {
+      try {
+        const localVotes = StorageService.getVotes() || [];
+        const filtered = localVotes.filter(v => !(v.target_type === 'project' && (String(v.target_id) === String(projectId) || String(v.innovation_id) === String(projectId)) && String(v.user_id) === String(userId)));
+        localStorage.setItem('innovexa_votes_v2', JSON.stringify(filtered));
+        notifyDataChange('project_votes');
+        return { success: true, error: null };
+      } catch (err) {
+        return { success: false, error: err };
+      }
+    }
     try {
-      const { data, error } = await supabase
-        .from('votes')
-        .select('*')
-        .eq('target_type', 'review')
-        .eq('target_id', reviewId);
+      const { error } = await supabase
+        .from('project_votes')
+        .delete()
+        .eq('project_id', projectId)
+        .eq('user_id', userId);
 
-      if (!error && Array.isArray(data)) {
-        const upvotes = data.filter(v => v.vote_type === 'upvote').length;
-        const downvotes = data.filter(v => v.vote_type === 'downvote').length;
-        const userVote = userId ? (data.find(v => v.user_id === userId)?.vote_type || null) : null;
-        return { activeVoteType: userVote, upvotesCount: upvotes, downvotesCount: downvotes };
+      if (error) throw error;
+      notifyDataChange('project_votes');
+      return { success: true, error: null };
+    } catch (e) {
+      try {
+        const localVotes = StorageService.getVotes() || [];
+        const filtered = localVotes.filter(v => !(v.target_type === 'project' && (String(v.target_id) === String(projectId) || String(v.innovation_id) === String(projectId)) && String(v.user_id) === String(userId)));
+        localStorage.setItem('innovexa_votes_v2', JSON.stringify(filtered));
+        notifyDataChange('project_votes');
+        return { success: true, error: null };
+      } catch (err) {
+        return { success: false, error: e };
+      }
+    }
+  },
+
+  async getProjectVotes(projectId) {
+    if (!projectId) return { upvotes: 0, downvotes: 0, total: 0, error: null };
+    if (!isUUID(projectId)) {
+      return StorageService.getProjectVotes(projectId);
+    }
+    try {
+      const [upRes, downRes] = await Promise.all([
+        supabase.from('project_votes').select('id', { count: 'exact', head: true }).eq('project_id', projectId).eq('vote_type', 'upvote'),
+        supabase.from('project_votes').select('id', { count: 'exact', head: true }).eq('project_id', projectId).eq('vote_type', 'downvote')
+      ]);
+
+      if (!upRes.error && !downRes.error) {
+        const inno = StorageService.getInnovationById(projectId);
+        const baseUp = inno ? (inno.base_upvotes ?? (inno.upvotes_count || 0)) : 0;
+        const baseDown = inno ? (inno.base_downvotes ?? (inno.downvotes_count || 0)) : 0;
+        const upvotes = baseUp + (upRes.count || 0);
+        const downvotes = baseDown + (downRes.count || 0);
+        return { upvotes, downvotes, total: upvotes - downvotes, error: null };
       }
     } catch (e) {}
 
-    const localVotes = StorageService.getVotesForTarget('review', reviewId);
-    const localUserVote = userId ? StorageService.getUserVote({ userId, targetType: 'review', targetId: reviewId })?.vote_type : null;
-    return {
-      activeVoteType: localUserVote || null,
-      upvotesCount: localVotes.upvotes || 0,
-      downvotesCount: localVotes.downvotes || 0
-    };
+    return StorageService.getProjectVotes(projectId);
   },
 
-  async toggleProjectLike(projectId, userId, projectOwnerId, projectTitle, userName, userAvatar) {
-    const res = await this.voteProject({
-      projectId,
-      userId,
-      voteType: 'upvote',
-      projectOwnerId,
-      projectTitle,
-      userName,
-      userAvatar
-    });
-    return {
-      hasLiked: res.activeVoteType === 'upvote',
-      likeCount: res.upvotesCount,
-      error: res.error
-    };
-  },
-
-  // ============================================================================
-  // 4. REVIEWS (public.reviews)
-  // ============================================================================
-  async getReviews(projectId = null) {
-    try {
-      if (projectId) {
-        console.log("Fetching reviews for project:", projectId);
-      }
-
-      let query = supabase
-        .from('reviews')
-        .select(`
-          *,
-          profiles (
-            id,
-            full_name
-          )
-        `)
-        .order('created_at', { ascending: false });
-
-      if (projectId) {
-        query = query.eq('project_id', projectId);
-      }
-
-      const { data: reviews, error } = await query;
-
-      if (error) {
-        console.error('[Supabase getReviews error]:', error.message || error);
-        return { data: projectId ? StorageService.getReviewsForInnovation(projectId) : StorageService.getReviews(), error: null };
-      }
-
-      if (reviews && Array.isArray(reviews)) {
-        const enriched = reviews.map(r => ({
-          ...r,
-          reviewer_id: r.user_id,
-          reviewer_name: r.profiles?.full_name || 'Verified Validator',
-          reviewer_avatar: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(r.profiles?.full_name || 'Validator')}&backgroundColor=20212a,e76f82,7186d8`,
-          overall_feedback: r.content || r.overall_feedback || '',
-          suggestion: r.content || r.suggestion || '',
-          rating: Number(r.rating) || 5
-        }));
-        return { data: enriched, error: null };
-      }
-
-      return { data: projectId ? StorageService.getReviewsForInnovation(projectId) : StorageService.getReviews(), error: null };
-    } catch (err) {
-      console.error('[Supabase getReviews exception]:', err);
-      return { data: projectId ? StorageService.getReviewsForInnovation(projectId) : StorageService.getReviews(), error: null };
+  async getUserProjectVote(projectId, userId) {
+    if (!projectId || !userId) return null;
+    if (!isUUID(projectId) || !isUUID(userId)) {
+      return StorageService.getUserVote(userId, 'project', projectId);
     }
+    try {
+      const { data, error } = await supabase
+        .from('project_votes')
+        .select('vote_type')
+        .eq('project_id', projectId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!error && data) {
+        return data.vote_type;
+      }
+    } catch (e) {}
+
+    return StorageService.getUserVote(userId, 'project', projectId);
   },
 
-  async hasUserReviewedProject(projectId, userId) {
-    if (!projectId || !userId) return false;
+  // Backwards-compatible vote helpers
+  async toggleProjectLike(projectId, currentUser) {
+    if (!currentUser?.id) return { data: null, error: 'User must be signed in' };
+    return this.voteProject({ projectId, userId: currentUser.id, voteType: 'upvote' });
+  },
+
+  async toggleVote({ projectId, voteType = 'upvote', currentUser }) {
+    if (!currentUser?.id) return { data: null, error: 'User must be signed in' };
+    return this.voteProject({ projectId, userId: currentUser.id, voteType });
+  },
+
+  async hasUserLikedProject(projectId, userId) {
+    const v = await this.getUserProjectVote(projectId, userId);
+    return v === 'upvote';
+  },
+
+  async hasUserDislikedProject(projectId, userId) {
+    const v = await this.getUserProjectVote(projectId, userId);
+    return v === 'downvote';
+  },
+
+  // ============================================================================
+  // 6. PROJECT SUGGESTIONS (public.project_suggestions)
+  // ============================================================================
+  async createProjectSuggestion({ projectId, userId, title, content, suggestionType = 'general' }) {
+    if (!projectId || !userId || !content) {
+      const err = new Error('Project ID, User ID, and Content are required for suggestions.');
+      console.error('[Supabase createProjectSuggestion error]:', err);
+      return { data: null, error: err };
+    }
 
     try {
       const { data, error } = await supabase
-        .from('reviews')
+        .from('project_suggestions')
+        .insert([{
+          project_id: projectId,
+          user_id: userId,
+          title: title || 'Project Enhancement Suggestion',
+          content: content.trim(),
+          suggestion_type: suggestionType,
+          status: 'open'
+        }])
+        .select(`
+          *,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url
+          )
+        `)
+        .single();
+
+      if (error) throw error;
+
+      // Notify project owner about the suggestion (fire-and-forget)
+      try {
+        const { data: proj } = await supabase.from('projects').select('user_id, title').eq('id', projectId).maybeSingle();
+        if (proj?.user_id && proj.user_id !== userId) {
+          const { data: suggester } = await supabase.from('profiles').select('full_name').eq('id', userId).maybeSingle();
+          const suggesterName = suggester?.full_name || 'Someone';
+          await this.createNotification({
+            userId: proj.user_id,
+            actorId: userId,
+            projectId: projectId,
+            type: 'project_suggestion',
+            title: `New suggestion on "${proj.title || 'your project'}"`,
+            message: `${suggesterName} submitted: "${(title || content || '').slice(0, 80)}"`,
+            link: `detail:${projectId}`
+          });
+        }
+      } catch (_) {}
+
+      notifyDataChange('project_suggestions');
+      return { data, error: null };
+    } catch (err) {
+      console.warn('[Supabase createProjectSuggestion fallback to storage]:', err.message || err);
+      try {
+        const localSugs = JSON.parse(localStorage.getItem('innovexa_project_suggestions_v2') || '[]');
+        const newSug = {
+          id: `sug_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          project_id: projectId,
+          user_id: userId,
+          title: title || 'Project Enhancement Suggestion',
+          content: content.trim(),
+          suggestion_type: suggestionType,
+          status: 'open',
+          created_at: new Date().toISOString()
+        };
+        localSugs.unshift(newSug);
+        localStorage.setItem('innovexa_project_suggestions_v2', JSON.stringify(localSugs));
+        notifyDataChange('project_suggestions');
+        return { data: newSug, error: null };
+      } catch (e) {
+        return { data: null, error: err };
+      }
+    }
+  },
+
+  async getProjectSuggestions(projectId) {
+    if (!projectId) return { data: [], error: null };
+    try {
+      const { data, error } = await supabase
+        .from('project_suggestions')
+        .select(`
+          *,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url
+          )
+        `)
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return { data: data || [], error: null };
+    } catch (e) {
+      try {
+        const localSugs = JSON.parse(localStorage.getItem('innovexa_project_suggestions_v2') || '[]');
+        const filtered = localSugs.filter(s => s.project_id === projectId);
+        return { data: filtered, error: null };
+      } catch {
+        return { data: [], error: e };
+      }
+    }
+  },
+
+  async updateProjectSuggestionStatus(suggestionId, status, userId) {
+    if (!suggestionId || !status) return { data: null, error: 'Suggestion ID and Status required' };
+    try {
+      let query = supabase
+        .from('project_suggestions')
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq('id', suggestionId);
+
+      const { data, error } = await query.select().single();
+      if (error) throw error;
+      notifyDataChange('project_suggestions');
+      return { data, error: null };
+    } catch (e) {
+      try {
+        const localSugs = JSON.parse(localStorage.getItem('innovexa_project_suggestions_v2') || '[]');
+        const idx = localSugs.findIndex(s => s.id === suggestionId);
+        if (idx !== -1) {
+          localSugs[idx].status = status;
+          localSugs[idx].updated_at = new Date().toISOString();
+          localStorage.setItem('innovexa_project_suggestions_v2', JSON.stringify(localSugs));
+          notifyDataChange('project_suggestions');
+          return { data: localSugs[idx], error: null };
+        }
+        return { data: null, error: 'Suggestion not found' };
+      } catch {
+        return { data: null, error: e };
+      }
+    }
+  },
+
+  // ============================================================================
+  // 6.5. PROJECT FOLLOWS (public.project_follows)
+  // ============================================================================
+  async followProject(arg1, arg2) {
+    const projectId = typeof arg1 === 'object' && arg1 !== null ? (arg1.projectId || arg1.id) : arg1;
+    const userId = typeof arg1 === 'object' && arg1 !== null ? (arg1.userId || arg1.user_id) : arg2;
+    if (!projectId || !userId) {
+      return { success: false, isFollowing: false, error: 'Project ID and User ID are required' };
+    }
+    try {
+      const { data, error } = await supabase
+        .from('project_follows')
+        .upsert([{ project_id: projectId, user_id: userId }], { onConflict: 'project_id,user_id' })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Notify project owner about the follow (fire-and-forget)
+      try {
+        const { data: proj } = await supabase.from('projects').select('user_id, title').eq('id', projectId).maybeSingle();
+        if (proj?.user_id && proj.user_id !== userId) {
+          const { data: follower } = await supabase.from('profiles').select('full_name').eq('id', userId).maybeSingle();
+          const followerName = follower?.full_name || 'Someone';
+          await this.createNotification({
+            userId: proj.user_id,
+            actorId: userId,
+            projectId: projectId,
+            type: 'project_follow',
+            title: `${followerName} is now following "${proj.title || 'your project'}"`,
+            message: `${followerName} added your project to their watchlist.`,
+            link: `detail:${projectId}`
+          });
+        }
+      } catch (_) {}
+
+      notifyDataChange('project_follows');
+      return { success: true, isFollowing: true, data, error: null };
+    } catch (err) {
+      console.warn('[Supabase followProject fallback to storage]:', err.message || err);
+      try {
+        const localFollows = JSON.parse(localStorage.getItem('innovexa_project_follows_v2') || '[]');
+        if (!localFollows.some(f => f.project_id === projectId && f.user_id === userId)) {
+          localFollows.push({
+            id: `fol_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            project_id: projectId,
+            user_id: userId,
+            created_at: new Date().toISOString()
+          });
+          localStorage.setItem('innovexa_project_follows_v2', JSON.stringify(localFollows));
+        }
+        notifyDataChange('project_follows');
+        return { success: true, isFollowing: true, error: null };
+      } catch (e) {
+        return { success: false, isFollowing: false, error: err };
+      }
+    }
+  },
+
+  async unfollowProject(arg1, arg2) {
+    const projectId = typeof arg1 === 'object' && arg1 !== null ? (arg1.projectId || arg1.id) : arg1;
+    const userId = typeof arg1 === 'object' && arg1 !== null ? (arg1.userId || arg1.user_id) : arg2;
+    if (!projectId || !userId) {
+      return { success: false, isFollowing: false, error: 'Project ID and User ID are required' };
+    }
+    try {
+      const { error } = await supabase
+        .from('project_follows')
+        .delete()
+        .eq('project_id', projectId)
+        .eq('user_id', userId);
+
+      if (error) throw error;
+
+      notifyDataChange('project_follows');
+      return { success: true, isFollowing: false, error: null };
+    } catch (err) {
+      console.warn('[Supabase unfollowProject fallback to storage]:', err.message || err);
+      try {
+        const localFollows = JSON.parse(localStorage.getItem('innovexa_project_follows_v2') || '[]');
+        const filtered = localFollows.filter(f => !(f.project_id === projectId && f.user_id === userId));
+        localStorage.setItem('innovexa_project_follows_v2', JSON.stringify(filtered));
+        notifyDataChange('project_follows');
+        return { success: true, isFollowing: false, error: null };
+      } catch (e) {
+        return { success: false, isFollowing: false, error: err };
+      }
+    }
+  },
+
+  async toggleFollowProject(arg1, arg2) {
+    const projectId = typeof arg1 === 'object' && arg1 !== null ? (arg1.projectId || arg1.id) : arg1;
+    const userId = typeof arg1 === 'object' && arg1 !== null ? (arg1.userId || arg1.user_id) : arg2;
+    if (!projectId || !userId) {
+      return { isFollowing: false, error: 'User must be signed in to follow projects' };
+    }
+    try {
+      const currentlyFollowing = await this.isProjectFollowed(projectId, userId);
+      if (currentlyFollowing) {
+        const res = await this.unfollowProject(projectId, userId);
+        return { isFollowing: false, error: res.error || null };
+      } else {
+        const res = await this.followProject(projectId, userId);
+        return { isFollowing: true, error: res.error || null };
+      }
+    } catch (err) {
+      console.error('[Supabase toggleFollowProject exception]:', err);
+      return { isFollowing: false, error: err };
+    }
+  },
+
+  async isProjectFollowed(arg1, arg2) {
+    const projectId = typeof arg1 === 'object' && arg1 !== null ? (arg1.projectId || arg1.id) : arg1;
+    const userId = typeof arg1 === 'object' && arg1 !== null ? (arg1.userId || arg1.user_id) : arg2;
+    if (!projectId || !userId) return false;
+    try {
+      const { data, error } = await supabase
+        .from('project_follows')
         .select('id')
         .eq('project_id', projectId)
         .eq('user_id', userId)
         .maybeSingle();
 
       if (!error && data) return true;
+    } catch (e) {}
 
-      const localReviews = StorageService.getReviewsForInnovation(projectId);
-      return localReviews.some(r => r.user_id === userId || r.reviewer_id === userId);
-    } catch (err) {
-      const localReviews = StorageService.getReviewsForInnovation(projectId);
-      return localReviews.some(r => r.user_id === userId || r.reviewer_id === userId);
+    try {
+      const localFollows = JSON.parse(localStorage.getItem('innovexa_project_follows_v2') || '[]');
+      return localFollows.some(f => f.project_id === projectId && f.user_id === userId);
+    } catch {
+      return false;
     }
   },
 
-  async submitReview(projectId, rating, content) {
+  async getProjectFollowersCount(projectId) {
+    if (!projectId) return 0;
     try {
-      // Get authenticated user
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
+      const { count, error } = await supabase
+        .from('project_follows')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', projectId);
 
-      if (authError || !user) {
-        console.error("Authentication error:", authError);
-        throw new Error("You must be signed in to submit a review.");
-      }
+      if (!error && typeof count === 'number') return count;
+    } catch (e) {}
 
-      if (!projectId) {
-        throw new Error("Project ID is missing.");
-      }
+    try {
+      const localFollows = JSON.parse(localStorage.getItem('innovexa_project_follows_v2') || '[]');
+      return localFollows.filter(f => f.project_id === projectId).length;
+    } catch {
+      return 0;
+    }
+  },
 
-      if (!content?.trim()) {
-        throw new Error("Review content cannot be empty.");
-      }
-
-      const ratingVal = Number(rating) || 5;
-      const cleanContent = content.trim();
-
-      console.log({
-        projectId,
-        userId: user.id,
-        rating: ratingVal,
-        content: cleanContent
-      });
-
-      // Insert into Supabase
+  async getProjectFollowers(projectId) {
+    if (!projectId) return { data: [], error: null };
+    try {
       const { data, error } = await supabase
-        .from("reviews")
-        .insert({
-          project_id: projectId,
-          user_id: user.id,
-          rating: ratingVal,
-          content: cleanContent,
-        })
+        .from('project_follows')
+        .select(`
+          id,
+          created_at,
+          profiles:user_id (
+            id,
+            username,
+            full_name,
+            avatar_url,
+            headline
+          )
+        `)
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false });
+
+      if (!error && data) return { data, error: null };
+    } catch (e) {}
+
+    try {
+      const localFollows = JSON.parse(localStorage.getItem('innovexa_project_follows_v2') || '[]');
+      const filtered = localFollows.filter(f => f.project_id === projectId);
+      return { data: filtered, error: null };
+    } catch (e) {
+      return { data: [], error: e };
+    }
+  },
+
+  async getUserFollowedProjects(userId) {
+    if (!userId) return { data: [], error: null };
+    try {
+      const { data, error } = await supabase
+        .from('project_follows')
+        .select(`
+          id,
+          created_at,
+          projects:project_id (
+            *,
+            categories:category_id (*),
+            profiles:user_id (*)
+          )
+        `)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('[Supabase getUserFollowedProjects error]:', error);
+        return { data: [], error };
+      }
+      return { data: (data || []).map(f => f.projects).filter(Boolean), error: null };
+    } catch (e) {
+      console.error('[Supabase getUserFollowedProjects exception]:', e);
+      return { data: [], error: e };
+    }
+  },
+
+  // ============================================================================
+  // 7. REVIEWS (public.reviews - project_id, user_id, rating, title, content, is_public)
+  // ============================================================================
+  async createReview({ projectId, userId, rating = 5, title = '', content = '', isPublic = true }) {
+    if (!projectId || !userId || !content) {
+      const err = new Error('Project ID, User ID, and Content are required to submit a review.');
+      console.error('[Supabase createReview error]:', err);
+      return { data: null, error: err };
+    }
+
+    // NOTE: The reviews table uses reviewer_id (NOT user_id) as the author column.
+    // The RLS policy enforces: auth.uid() = reviewer_id.
+    // The unique constraint is: UNIQUE (project_id, reviewer_id).
+    const reviewPayload = {
+      project_id: projectId,
+      reviewer_id: userId,          // ← FIXED: was 'user_id', must be 'reviewer_id'
+      rating: Math.max(1, Math.min(5, Number(rating) || 5)),
+      overall_feedback: content.trim(), // ← FIXED: schema column is 'overall_feedback'
+      suggestion: title ? title.trim() : '', // store title text in suggestion field
+      title: title ? title.trim() : (content.trim().slice(0, 60) + (content.trim().length > 60 ? '...' : '')),
+      content: content.trim(),      // ← added by migration FIX 2
+      is_public: Boolean(isPublic)  // ← added by migration FIX 2
+    };
+
+    try {
+      const { data, error } = await supabase
+        .from('reviews')
+        .insert([reviewPayload])
         .select(`
           *,
-          profiles (
+          profiles:reviewer_id (
             id,
-            full_name
+            username,
+            full_name,
+            avatar_url,
+            headline,
+            role,
+            reputation_points
           )
         `)
         .single();
 
-      if (error) {
-        console.error("Review insert failed:", error);
-        throw error;
+      if (error) throw error;
+
+      if (!data?.id) {
+        throw new Error('Review was not created (no ID returned)');
       }
 
-      console.log("Review saved successfully:", data);
+      const enriched = {
+        ...data,
+        reviewer_id: data.reviewer_id || data.user_id,
+        user_id: data.reviewer_id || data.user_id, // backwards-compat alias
+        reviewer_name: data.profiles?.full_name || 'Community Validator',
+        reviewer_avatar: data.profiles?.avatar_url || '',
+        overall_feedback: data.overall_feedback || data.content || '',
+        helpful_votes_count: 0,
+        unhelpful_votes_count: 0
+      };
 
-      // Save to StorageService
-      StorageService.addReview({
-        id: data.id,
-        project_id: projectId,
-        innovation_id: projectId,
-        user_id: user.id,
-        reviewer_id: user.id,
-        reviewer_name: data.profiles?.full_name || user.user_metadata?.full_name || user.email?.split('@')[0] || 'Verified Validator',
-        reviewer_avatar: user.user_metadata?.avatar_url || '',
-        rating: ratingVal,
-        content: cleanContent,
-        suggestion: cleanContent,
-        overall_feedback: cleanContent,
-        review_status: 'VALID'
-      });
-
-      // Optionally notify project owner (if owner !== reviewer)
+      // Notify the project owner that a review was submitted (fire-and-forget)
       try {
-        const { data: projData } = await supabase
-          .from("projects")
-          .select("user_id, title")
-          .eq("id", projectId)
-          .maybeSingle();
-
-        if (projData?.user_id && projData.user_id !== user.id) {
+        const { data: proj } = await supabase.from('projects').select('user_id, title').eq('id', projectId).maybeSingle();
+        if (proj?.user_id && proj.user_id !== userId) {
+          const reviewerName = enriched.reviewer_name;
           await this.createNotification({
-            userId: projData.user_id,
-            actorId: user.id,
-            type: "REVIEW",
-            title: "New Review on Your Project",
-            message: `${data.profiles?.full_name || 'An innovator'} reviewed "${projData.title || 'your project'}": "${cleanContent.substring(0, 50)}..."`,
-            relatedProjectId: projectId
+            userId: proj.user_id,
+            actorId: userId,
+            projectId: projectId,
+            type: 'new_review',
+            title: `${reviewerName} reviewed "${proj.title || 'your project'}"`,
+            message: `Rating: ${'⭐'.repeat(enriched.rating || 5)} — "${(enriched.title || enriched.content || '').slice(0, 80)}"`,
+            link: `detail:${projectId}`
           });
         }
-      } catch (notifErr) {
-        console.warn("Could not send review notification:", notifErr);
-      }
+      } catch (_) {}
 
+      StorageService.addReview(enriched);
       notifyDataChange('reviews');
-      notifyDataChange('innovations');
-
-      return data;
-    } catch (error) {
-      console.error("Submit review error:", error);
-      throw error;
+      return { data: enriched, error: null };
+    } catch (err) {
+      console.warn('[Supabase createReview fallback to storage]:', err.message || err);
+      try {
+        const localReviews = StorageService.getReviews() || [];
+        const newReview = {
+          id: `rev_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          project_id: projectId,
+          user_id: userId,
+          rating: reviewPayload.rating,
+          title: reviewPayload.title,
+          content: reviewPayload.content,
+          is_public: reviewPayload.is_public,
+          helpful_votes_count: 0,
+          unhelpful_votes_count: 0,
+          created_at: new Date().toISOString()
+        };
+        localReviews.unshift(newReview);
+        localStorage.setItem('innovexa_reviews_v2', JSON.stringify(localReviews));
+        notifyDataChange('reviews');
+        return { data: newReview, error: null };
+      } catch (e) {
+        return { data: null, error: err };
+      }
     }
   },
 
-  async updateReview(reviewId, { rating, content }) {
+  async submitReview(projectId, rating, content, title = '', isPublic = true) {
+    const user = await this.getCurrentUser();
+    const effectiveUserId = user?.id || StorageService.getCurrentUserId();
+    return this.createReview({
+      projectId,
+      userId: effectiveUserId,
+      rating,
+      title,
+      content,
+      isPublic
+    });
+  },
+
+  async getProjectReviews(projectId) {
+    return this.getReviews(projectId);
+  },
+
+  async getReviews(projectId) {
+    if (!projectId) return { data: [], error: null };
+
     try {
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
-
-      if (authError || !user) {
-        console.error("Authentication error:", authError);
-        throw new Error("You must be signed in to edit your review.");
-      }
-
-      if (!reviewId) {
-        throw new Error("Review ID is missing.");
-      }
-
-      if (!content?.trim()) {
-        throw new Error("Review content cannot be empty.");
-      }
-
-      const ratingVal = Number(rating) || 5;
-      const cleanContent = content.trim();
-
       const { data, error } = await supabase
         .from('reviews')
-        .update({
-          rating: ratingVal,
-          content: cleanContent,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', reviewId)
-        .eq('user_id', user.id)
         .select(`
           *,
-          profiles (
+          profiles:reviewer_id (
             id,
-            full_name
+            username,
+            full_name,
+            avatar_url,
+            headline,
+            role,
+            reputation_points
+          )
+        `)
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data && Array.isArray(data)) {
+        // Enrich reviews with real helpful votes from review_votes
+        const enriched = await Promise.all(data.map(async (item) => {
+          let helpfulVotes = 0;
+          let unhelpfulVotes = 0;
+          try {
+            const [hRes, uRes] = await Promise.all([
+              supabase.from('review_votes').select('id', { count: 'exact', head: true }).eq('review_id', item.id).eq('vote_type', 'helpful'),
+              supabase.from('review_votes').select('id', { count: 'exact', head: true }).eq('review_id', item.id).eq('vote_type', 'not_helpful')
+            ]);
+            if (typeof hRes.count === 'number') helpfulVotes = hRes.count;
+            if (typeof uRes.count === 'number') unhelpfulVotes = uRes.count;
+          } catch (e) {}
+
+          return {
+            ...item,
+            reviewer_id: item.reviewer_id || item.user_id,
+            user_id: item.reviewer_id || item.user_id, // backwards-compat alias
+            reviewer_name: item.profiles?.full_name || 'Community Validator',
+            reviewer_avatar: item.profiles?.avatar_url || '',
+            helpful_votes_count: helpfulVotes,
+            unhelpful_votes_count: unhelpfulVotes,
+            overall_feedback: item.overall_feedback || item.content,
+            suggestion: item.suggestion || item.content
+          };
+        }));
+
+        return { data: enriched, error: null };
+      }
+
+      return { data: [], error: null };
+    } catch (err) {
+      console.warn('[Supabase getReviews fallback to storage]:', err.message || err);
+      try {
+        const localReviews = StorageService.getReviewsForInnovation(projectId) || [];
+        const localVotes = JSON.parse(localStorage.getItem('innovexa_review_votes_v2') || '[]');
+        const enriched = localReviews.map(r => {
+          const votesForReview = localVotes.filter(v => v.review_id === r.id);
+          const helpful = votesForReview.filter(v => v.vote_type === 'helpful').length;
+          const notHelpful = votesForReview.filter(v => v.vote_type === 'not_helpful').length;
+          return {
+            ...r,
+            helpful_votes_count: Math.max(r.helpful_votes_count || 0, helpful),
+            unhelpful_votes_count: Math.max(r.unhelpful_votes_count || 0, notHelpful),
+            overall_feedback: r.content || r.overall_feedback,
+            suggestion: r.content || r.suggestion
+          };
+        });
+        return { data: enriched, error: null };
+      } catch (e) {
+        return { data: [], error: err };
+      }
+    }
+  },
+
+  async getUserReviews(userId) {
+    if (!userId) return { data: [], error: null };
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
+    if (!isUUID) {
+      const local = (StorageService.getReviews() || []).filter(
+        r => r.reviewer_id === userId || r.user_id === userId
+      );
+      return { data: local, error: null };
+    }
+    try {
+      const { data, error } = await supabase
+        .from('reviews')
+        .select(`
+          *,
+          projects:project_id (
+            id,
+            title,
+            slug
+          )
+        `)
+        .eq('reviewer_id', userId)  // FIXED: schema uses reviewer_id not user_id
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return { data: data || [], error: null };
+    } catch (e) {
+      try {
+        const local = StorageService.getReviewsByReviewerId(userId) || [];
+        return { data: local, error: null };
+      } catch {
+        return { data: [], error: e };
+      }
+    }
+  },
+
+  async hasUserReviewedProject(projectId, userId) {
+    if (!projectId || !userId) return false;
+    try {
+      const { data, error } = await supabase
+        .from('reviews')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('reviewer_id', userId)  // FIXED: schema uses reviewer_id not user_id
+        .maybeSingle();
+
+      if (!error && data) return true;
+    } catch (e) {}
+
+    try {
+      const local = StorageService.getReviewsForInnovation(projectId) || [];
+      return local.some(r => r.user_id === userId || r.reviewer_id === userId);
+    } catch {
+      return false;
+    }
+  },
+
+  async updateReview(reviewId, updates, userId) {
+    if (!reviewId) return { data: null, error: 'Review ID is required' };
+    try {
+      let query = supabase
+        .from('reviews')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', reviewId);
+
+      if (userId) query = query.eq('user_id', userId);
+
+      const { data, error } = await query
+        .select(`
+          *,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url
           )
         `)
         .single();
 
-      if (error) {
-        console.error("Review update failed:", error);
-        throw error;
-      }
+      if (error) throw error;
 
-      StorageService.updateReview(reviewId, {
-        rating: ratingVal,
-        content: cleanContent,
-        suggestion: cleanContent,
-        overall_feedback: cleanContent
-      });
-
+      StorageService.updateReview(reviewId, data || updates);
       notifyDataChange('reviews');
       return { data, error: null };
-    } catch (error) {
-      console.error("Update review error:", error);
-      return { data: null, error };
+    } catch (err) {
+      console.warn(`[Supabase updateReview fallback for ${reviewId}]:`, err.message || err);
+      try {
+        const localReviews = StorageService.getReviews() || [];
+        const idx = localReviews.findIndex(r => r.id === reviewId);
+        if (idx !== -1) {
+          if (userId && localReviews[idx].user_id && localReviews[idx].user_id !== userId && localReviews[idx].reviewer_id !== userId) {
+            return { data: null, error: new Error('Unauthorized: only the author can update this review.') };
+          }
+          localReviews[idx] = {
+            ...localReviews[idx],
+            ...updates,
+            updated_at: new Date().toISOString()
+          };
+          localStorage.setItem('innovexa_reviews_v2', JSON.stringify(localReviews));
+          notifyDataChange('reviews');
+          return { data: localReviews[idx], error: null };
+        }
+        return { data: null, error: new Error('Review not found') };
+      } catch (e) {
+        return { data: null, error: err };
+      }
     }
   },
 
-  async deleteReview(reviewId) {
+  async deleteReview(reviewId, userId) {
+    if (!reviewId) return { success: false, error: 'Review ID is required' };
     try {
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
+      let query = supabase.from('reviews').delete().eq('id', reviewId);
+      if (userId) query = query.eq('user_id', userId);
 
-      if (authError || !user) {
-        console.error("Authentication error:", authError);
-        throw new Error("You must be signed in to delete your review.");
-      }
-
-      if (!reviewId) {
-        throw new Error("Review ID is missing.");
-      }
-
-      const { error } = await supabase
-        .from('reviews')
-        .delete()
-        .eq('id', reviewId)
-        .eq('user_id', user.id);
-
-      if (error) {
-        console.error("Review delete failed:", error);
-        throw error;
-      }
+      const { error } = await query;
+      if (error) throw error;
 
       StorageService.deleteReview(reviewId);
       notifyDataChange('reviews');
       return { success: true, error: null };
-    } catch (error) {
-      console.error("Delete review error:", error);
-      return { success: false, error };
+    } catch (err) {
+      console.warn(`[Supabase deleteReview fallback for ${reviewId}]:`, err.message || err);
+      try {
+        const localReviews = StorageService.getReviews() || [];
+        const idx = localReviews.findIndex(r => r.id === reviewId);
+        if (idx !== -1) {
+          if (userId && localReviews[idx].user_id && localReviews[idx].user_id !== userId && localReviews[idx].reviewer_id !== userId) {
+            return { success: false, error: new Error('Unauthorized: only the author can delete this review.') };
+          }
+          localReviews.splice(idx, 1);
+          localStorage.setItem('innovexa_reviews_v2', JSON.stringify(localReviews));
+          notifyDataChange('reviews');
+          return { success: true, error: null };
+        }
+        return { success: false, error: new Error('Review not found') };
+      } catch (e) {
+        return { success: false, error: err };
+      }
     }
   },
 
   // ============================================================================
-  // 5. NOTIFICATIONS (public.notifications)
+  // 8. REVIEW SUGGESTIONS (public.review_suggestions)
   // ============================================================================
+  async createReviewSuggestion({ reviewId, userId, content, title = '' }) {
+    if (!reviewId || !userId || !content) {
+      const err = new Error('Review ID, User ID, and Content are required.');
+      console.error('[Supabase createReviewSuggestion error]:', err);
+      return { data: null, error: err };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('review_suggestions')
+        .insert([{
+          review_id: reviewId,
+          user_id: userId,
+          content: content.trim()
+        }])
+        .select(`
+          *,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url
+          )
+        `)
+        .single();
+
+      if (error) throw error;
+      notifyDataChange('review_suggestions');
+      return { data, error: null };
+    } catch (err) {
+      console.warn('[Supabase createReviewSuggestion fallback to storage]:', err.message || err);
+      try {
+        const localRevSugs = JSON.parse(localStorage.getItem('innovexa_review_suggestions_v2') || '[]');
+        const newSug = {
+          id: `rev_sug_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          review_id: reviewId,
+          user_id: userId,
+          content: content.trim(),
+          created_at: new Date().toISOString()
+        };
+        localRevSugs.push(newSug);
+        localStorage.setItem('innovexa_review_suggestions_v2', JSON.stringify(localRevSugs));
+        notifyDataChange('review_suggestions');
+        return { data: newSug, error: null };
+      } catch (e) {
+        return { data: null, error: err };
+      }
+    }
+  },
+
+  async getReviewSuggestions(reviewId) {
+    if (!reviewId) return { data: [], error: null };
+    try {
+      const { data, error } = await supabase
+        .from('review_suggestions')
+        .select(`
+          *,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url
+          )
+        `)
+        .eq('review_id', reviewId)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+      return { data: data || [], error: null };
+    } catch (e) {
+      try {
+        const localRevSugs = JSON.parse(localStorage.getItem('innovexa_review_suggestions_v2') || '[]');
+        const filtered = localRevSugs.filter(s => s.review_id === reviewId);
+        return { data: filtered, error: null };
+      } catch {
+        return { data: [], error: e };
+      }
+    }
+  },
+
+  // ============================================================================
+  // 9. REVIEW VOTES (public.review_votes - helpful | not_helpful)
+  // ============================================================================
+  async voteReview({ reviewId, userId, voteType = 'helpful' }) {
+    if (!reviewId || !userId) {
+      const err = new Error('Review ID and User ID are required.');
+      console.error('[Supabase voteReview error]:', err);
+      return { data: null, error: err };
+    }
+
+    const normalizedVote = (voteType === 'not_helpful' || voteType === 'downvote' || voteType === 'unhelpful') ? 'not_helpful' : 'helpful';
+
+    if (!isUUID(reviewId) || !isUUID(userId)) {
+      const res = StorageService.toggleVote({
+        userId,
+        targetType: 'review',
+        targetId: reviewId,
+        voteType: normalizedVote === 'helpful' ? 'upvote' : 'downvote'
+      });
+      const action = res?.activeVoteType ? (res.activeVoteType === (normalizedVote === 'helpful' ? 'upvote' : 'downvote') ? 'created' : 'updated') : 'removed';
+      return { data: { action, vote_type: normalizedVote }, error: null };
+    }
+
+    try {
+      const { data: existing, error: fetchErr } = await supabase
+        .from('review_votes')
+        .select('*')
+        .eq('review_id', reviewId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (fetchErr) throw fetchErr;
+
+      if (existing) {
+        if (existing.vote_type === normalizedVote) {
+          // Toggle off: remove vote
+          const { error: delErr } = await supabase.from('review_votes').delete().eq('id', existing.id);
+          if (delErr) throw delErr;
+          StorageService.toggleVote({ userId, targetType: 'review', targetId: reviewId, voteType: normalizedVote === 'helpful' ? 'upvote' : 'downvote' });
+          notifyDataChange('review_votes');
+          return { data: { action: 'removed', vote_type: null }, error: null };
+        } else {
+          // Switch vote (helpful <-> not_helpful)
+          const { data: updated, error: updateErr } = await supabase
+            .from('review_votes')
+            .update({ vote_type: normalizedVote, updated_at: new Date().toISOString() })
+            .eq('id', existing.id)
+            .select()
+            .single();
+
+          if (updateErr) throw updateErr;
+          StorageService.toggleVote({ userId, targetType: 'review', targetId: reviewId, voteType: normalizedVote === 'helpful' ? 'upvote' : 'downvote' });
+          notifyDataChange('review_votes');
+          return { data: { action: 'updated', vote_type: normalizedVote, vote: updated }, error: null };
+        }
+      } else {
+        const { data: created, error: insertErr } = await supabase
+          .from('review_votes')
+          .insert([{ review_id: reviewId, user_id: userId, vote_type: normalizedVote }])
+          .select()
+          .single();
+
+        if (insertErr) throw insertErr;
+        StorageService.toggleVote({ userId, targetType: 'review', targetId: reviewId, voteType: normalizedVote === 'helpful' ? 'upvote' : 'downvote' });
+        notifyDataChange('review_votes');
+        return { data: { action: 'created', vote_type: normalizedVote, vote: created }, error: null };
+      }
+    } catch (err) {
+      console.warn('[Supabase voteReview fallback to storage]:', err.message || err);
+      const res = StorageService.toggleVote({
+        userId,
+        targetType: 'review',
+        targetId: reviewId,
+        voteType: normalizedVote === 'helpful' ? 'upvote' : 'downvote'
+      });
+      const action = res?.activeVoteType ? (res.activeVoteType === (normalizedVote === 'helpful' ? 'upvote' : 'downvote') ? 'created' : 'updated') : 'removed';
+      return { data: { action, vote_type: normalizedVote }, error: null };
+    }
+  },
+
+  async getReviewVotes(reviewId, userId = null) {
+    if (!reviewId) return { helpful: 0, not_helpful: 0, userVote: null, total: 0, error: null };
+
+    // Retrieve base counts from storage
+    const allRevs = StorageService.getReviews() || [];
+    const targetRev = allRevs.find(r => String(r.id) === String(reviewId));
+    const baseHelpful = targetRev ? (targetRev.base_helpful ?? (targetRev.helpful_votes_count || 0)) : 0;
+    const baseNotHelpful = targetRev ? (targetRev.base_unhelpful ?? (targetRev.unhelpful_votes_count || 0)) : 0;
+
+    if (!isUUID(reviewId)) {
+      const localStats = StorageService.getVotesForTarget('review', reviewId);
+      const uv = userId ? StorageService.getUserVote(userId, 'review', reviewId) : null;
+      const userVote = uv === 'upvote' ? 'helpful' : (uv === 'downvote' ? 'not_helpful' : null);
+      const helpful = baseHelpful + localStats.upvotes;
+      const notHelpful = baseNotHelpful + localStats.downvotes;
+      return {
+        helpful,
+        not_helpful: notHelpful,
+        total: helpful - notHelpful,
+        userVote,
+        error: null
+      };
+    }
+
+    try {
+      const [helpRes, notHelpRes] = await Promise.all([
+        supabase.from('review_votes').select('id', { count: 'exact', head: true }).eq('review_id', reviewId).eq('vote_type', 'helpful'),
+        supabase.from('review_votes').select('id', { count: 'exact', head: true }).eq('review_id', reviewId).eq('vote_type', 'not_helpful')
+      ]);
+
+      if (helpRes?.error) throw helpRes.error;
+      if (notHelpRes?.error) throw notHelpRes.error;
+
+      let userVote = null;
+      if (userId && isUUID(userId)) {
+        const { data: userV, error: userVErr } = await supabase
+          .from('review_votes')
+          .select('vote_type')
+          .eq('review_id', reviewId)
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (!userVErr && userV) userVote = userV.vote_type;
+      } else if (userId) {
+        const uv = StorageService.getUserVote(userId, 'review', reviewId);
+        if (uv) userVote = uv === 'upvote' ? 'helpful' : (uv === 'downvote' ? 'not_helpful' : null);
+      }
+
+      const helpful = baseHelpful + (helpRes?.count || 0);
+      const notHelpful = baseNotHelpful + (notHelpRes?.count || 0);
+
+      return {
+        helpful,
+        not_helpful: notHelpful,
+        total: helpful - notHelpful,
+        userVote,
+        error: null
+      };
+    } catch (e) {
+      const localStats = StorageService.getVotesForTarget('review', reviewId);
+      const uv = userId ? StorageService.getUserVote(userId, 'review', reviewId) : null;
+      const userVote = uv === 'upvote' ? 'helpful' : (uv === 'downvote' ? 'not_helpful' : null);
+      const helpful = baseHelpful + localStats.upvotes;
+      const notHelpful = baseNotHelpful + localStats.downvotes;
+      return {
+        helpful,
+        not_helpful: notHelpful,
+        total: helpful - notHelpful,
+        userVote,
+        error: null
+      };
+    }
+  },
+
+  // ============================================================================
+  // 10. COMMUNITY POSTS (public.community_posts)
+  // ============================================================================
+  async getCommunityPosts(filters = {}) {
+    try {
+      let query = supabase
+        .from('community_posts')
+        .select(`
+          *,
+          categories:category_id (
+            id,
+            name,
+            slug
+          ),
+          profiles:user_id (
+            id,
+            username,
+            full_name,
+            avatar_url,
+            headline,
+            role,
+            reputation_points
+          )
+        `);
+
+      if (filters.category_id && filters.category_id !== 'ALL') {
+        query = query.eq('category_id', filters.category_id);
+      }
+      if (filters.user_id) {
+        query = query.eq('user_id', filters.user_id);
+      }
+      if (filters.post_type && filters.post_type !== 'ALL') {
+        query = query.ilike('post_type', filters.post_type);
+      }
+      if (filters.search && filters.search.trim()) {
+        const q = `%${filters.search.trim()}%`;
+        query = query.or(`title.ilike.${q},content.ilike.${q}`);
+      }
+
+      const sortBy = (filters.sortBy || 'LATEST').toUpperCase();
+      if (sortBy === 'OLDEST') {
+        query = query.order('created_at', { ascending: true });
+      } else if (sortBy === 'MOST_LIKED' || sortBy === 'MOST_UPVOTED') {
+        query = query.order('upvotes_count', { ascending: false });
+      } else if (sortBy === 'MOST_COMMENTED' || sortBy === 'MOST_DISCUSSED') {
+        query = query.order('comments_count', { ascending: false });
+      } else {
+        query = query.order('created_at', { ascending: false });
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      if (data && Array.isArray(data)) {
+        const enriched = data.map(item => ({
+          ...item,
+          author_name: item.profiles?.full_name || 'Community Member',
+          author_avatar: item.profiles?.avatar_url || '',
+          author_headline: item.profiles?.headline || '',
+          category_name: item.categories?.name || item.category_name || 'General',
+          likes_count: item.upvotes_count || 0,
+          dislikes_count: item.downvotes_count || 0,
+          comments_count: item.comments_count || 0
+        }));
+        return { data: enriched, error: null };
+      }
+
+      return { data: [], error: null };
+    } catch (err) {
+      console.warn('[Supabase getCommunityPosts fallback]:', err.message || err);
+      try {
+        let localPosts = StorageService.getCommunityPosts() || [];
+        if (filters.category_id && filters.category_id !== 'ALL') {
+          localPosts = localPosts.filter(p => p.category_id === filters.category_id || p.category_name === filters.category_id);
+        }
+        if (filters.user_id) {
+          localPosts = localPosts.filter(p => p.user_id === filters.user_id);
+        }
+        if (filters.post_type && filters.post_type !== 'ALL') {
+          localPosts = localPosts.filter(p => (p.post_type || '').toLowerCase() === filters.post_type.toLowerCase());
+        }
+        if (filters.search && filters.search.trim()) {
+          const q = filters.search.toLowerCase().trim();
+          localPosts = localPosts.filter(p =>
+            (p.title || '').toLowerCase().includes(q) ||
+            (p.content || '').toLowerCase().includes(q) ||
+            (Array.isArray(p.tags) && p.tags.some(t => t.toLowerCase().includes(q)))
+          );
+        }
+        const sortBy = (filters.sortBy || 'LATEST').toUpperCase();
+        if (sortBy === 'MOST_LIKED' || sortBy === 'MOST_UPVOTED') {
+          localPosts.sort((a, b) => (b.upvotes_count || b.likes_count || 0) - (a.upvotes_count || a.likes_count || 0));
+        } else if (sortBy === 'MOST_COMMENTED' || sortBy === 'MOST_DISCUSSED') {
+          localPosts.sort((a, b) => (b.comments_count || 0) - (a.comments_count || 0));
+        } else {
+          localPosts.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        }
+        return { data: localPosts, error: null };
+      } catch (e) {
+        return { data: [], error: err };
+      }
+    }
+  },
+
+  async createCommunityPost(postData) {
+    try {
+      const user = await this.getCurrentUser();
+      const userId = postData.user_id || user?.id || (typeof user === 'string' ? user : null) || StorageService.getCurrentUserId();
+      if (!userId) throw new Error('User must be signed in to create a community post.');
+
+      let categoryId = postData.category_id || null;
+      let categoryName = postData.category_name || 'General';
+      if (!categoryId || categoryId === 'ALL') {
+        const { data: cats } = await supabase.from('categories').select('id, name').limit(1);
+        if (cats && cats.length > 0) {
+          categoryId = cats[0].id;
+          categoryName = cats[0].name;
+        }
+      }
+
+      // community_posts.post_type CHECK constraint uses UPPERCASE values.
+      // Normalize incoming post_type to UPPERCASE to satisfy the constraint.
+      const normPostType = (postData.post_type || 'DISCUSSION').toUpperCase();
+      const supportedTypes = ['DISCUSSION', 'QUESTION', 'FEEDBACK_REQUEST', 'COLLABORATION', 'CHALLENGE', 'RESOURCE', 'ANNOUNCEMENT', 'FEEDBACK'];
+      const finalPostType = supportedTypes.includes(normPostType) ? normPostType : 'DISCUSSION';
+
+      const newPost = {
+        user_id: userId,
+        category_id: categoryId,
+        title: (postData.title || '').trim(),
+        content: (postData.content || '').trim(),
+        post_type: finalPostType,
+        tags: Array.isArray(postData.tags) ? postData.tags : (typeof postData.tags === 'string' ? postData.tags.split(',').map(t => t.trim()).filter(Boolean) : [])
+      };
+
+      const { data, error } = await supabase
+        .from('community_posts')
+        .insert([newPost])
+        .select(`
+          *,
+          categories:category_id (
+            id,
+            name,
+            slug
+          ),
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url,
+            username,
+            headline
+          )
+        `)
+        .single();
+
+      if (error) throw error;
+
+      StorageService.createCommunityPost({
+        ...data,
+        author_name: data.profiles?.full_name || 'Community Member',
+        author_avatar: data.profiles?.avatar_url || '',
+        category_name: data.categories?.name || categoryName
+      });
+
+      notifyDataChange('community_posts');
+      return { data, error: null };
+    } catch (err) {
+      console.warn('[Supabase createCommunityPost fallback]:', err.message || err);
+      try {
+        const localCreated = StorageService.createCommunityPost({
+          ...postData,
+          user_id: postData.user_id || StorageService.getCurrentUserId()
+        });
+        return { data: localCreated, error: null };
+      } catch (e) {
+        return { data: null, error: err };
+      }
+    }
+  },
+
+  async updateCommunityPost(postId, updates, userId) {
+    if (!postId) return { data: null, error: 'Post ID is required' };
+    try {
+      const user = await this.getCurrentUser();
+      const currentUid = userId || user?.id || (typeof user === 'string' ? user : null) || StorageService.getCurrentUserId();
+
+      // Verify ownership
+      const { data: existing, error: fetchErr } = await supabase
+        .from('community_posts')
+        .select('user_id')
+        .eq('id', postId)
+        .single();
+
+      if (fetchErr) throw fetchErr;
+      if (existing && currentUid && existing.user_id !== currentUid) {
+        const authErr = new Error('Unauthorized: only the author can update this post.');
+        console.error(authErr);
+        return { data: null, error: authErr };
+      }
+
+      const VALID_POST_COLS = new Set(['title', 'content', 'post_type', 'category_id', 'tags']);
+      const sanitizedUpdates = {};
+      for (const [k, v] of Object.entries(updates || {})) {
+        if (VALID_POST_COLS.has(k) && v !== undefined) {
+          sanitizedUpdates[k] = (k === 'post_type' && typeof v === 'string') ? v.toUpperCase() : v;
+        }
+      }
+      sanitizedUpdates.updated_at = new Date().toISOString();
+
+      const { data, error } = await supabase
+        .from('community_posts')
+        .update(sanitizedUpdates)
+        .eq('id', postId)
+        .select()
+        .single();
+
+      if (error) throw error;
+      notifyDataChange('community_posts');
+      return { data, error: null };
+    } catch (e) {
+      console.warn('[Supabase updateCommunityPost fallback]:', e.message || e);
+      try {
+        const posts = StorageService.getCommunityPosts();
+        const postIndex = posts.findIndex(p => p.id === postId);
+        if (postIndex !== -1) {
+          const user = await this.getCurrentUser();
+          const currentUid = userId || user?.id || (typeof user === 'string' ? user : null) || StorageService.getCurrentUserId();
+          if (posts[postIndex].user_id && currentUid && posts[postIndex].user_id !== currentUid) {
+            return { data: null, error: new Error('Unauthorized: only the author can update this post.') };
+          }
+          posts[postIndex] = { ...posts[postIndex], ...updates, updated_at: new Date().toISOString() };
+          localStorage.setItem('innovexa_community_posts_v2', JSON.stringify(posts));
+          notifyDataChange('community_posts');
+          return { data: posts[postIndex], error: null };
+        }
+        return { data: null, error: e };
+      } catch (err) {
+        return { data: null, error: e };
+      }
+    }
+  },
+
+  async deleteCommunityPost(postId, userId) {
+    if (!postId) return { success: false, error: 'Post ID is required' };
+    try {
+      const user = await this.getCurrentUser();
+      const currentUid = userId || user?.id || (typeof user === 'string' ? user : null) || StorageService.getCurrentUserId();
+
+      // Verify ownership
+      const { data: existing, error: fetchErr } = await supabase
+        .from('community_posts')
+        .select('user_id')
+        .eq('id', postId)
+        .single();
+
+      if (fetchErr) throw fetchErr;
+      if (existing && currentUid && existing.user_id !== currentUid) {
+        return { success: false, error: new Error('Unauthorized: only the author can delete this post.') };
+      }
+
+      const { error } = await supabase.from('community_posts').delete().eq('id', postId);
+      if (error) throw error;
+
+      notifyDataChange('community_posts');
+      return { success: true, error: null };
+    } catch (e) {
+      console.warn('[Supabase deleteCommunityPost fallback]:', e.message || e);
+      try {
+        const posts = StorageService.getCommunityPosts();
+        const existing = posts.find(p => p.id === postId);
+        const user = await this.getCurrentUser();
+        const currentUid = userId || user?.id || (typeof user === 'string' ? user : null) || StorageService.getCurrentUserId();
+        if (existing && existing.user_id && currentUid && existing.user_id !== currentUid) {
+          return { success: false, error: new Error('Unauthorized: only the author can delete this post.') };
+        }
+        StorageService.deleteCommunityPost(postId);
+        notifyDataChange('community_posts');
+        return { success: true, error: null };
+      } catch (err) {
+        return { success: false, error: e };
+      }
+    }
+  },
+
+  // ============================================================================
+  // 11. COMMUNITY COMMENTS (public.community_comments)
+  // ============================================================================
+  async getCommunityComments(postId) {
+    if (!postId) return { data: [], error: null };
+    try {
+      const { data, error } = await supabase
+        .from('community_comments')
+        .select(`
+          *,
+          profiles:user_id (
+            id,
+            username,
+            full_name,
+            avatar_url,
+            role,
+            headline
+          )
+        `)
+        .eq('post_id', postId)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      if (data && Array.isArray(data)) {
+        const enriched = data.map(item => ({
+          ...item,
+          author_name: item.profiles?.full_name || 'Community Member',
+          author_avatar: item.profiles?.avatar_url || '',
+          author_headline: item.profiles?.headline || '',
+          likes_count: item.upvotes_count || 0,
+          dislikes_count: item.downvotes_count || 0
+        }));
+        return { data: enriched, error: null };
+      }
+
+      return { data: [], error: null };
+    } catch (err) {
+      console.warn('[Supabase getCommunityComments fallback]:', err.message || err);
+      try {
+        const localComments = StorageService.getCommunityComments(postId) || [];
+        return { data: localComments, error: null };
+      } catch (e) {
+        return { data: [], error: err };
+      }
+    }
+  },
+
+  async createCommunityComment(commentData) {
+    try {
+      const user = await this.getCurrentUser();
+      const userId = commentData.user_id || user?.id || (typeof user === 'string' ? user : null) || StorageService.getCurrentUserId();
+      const postId = commentData.post_id || commentData.postId;
+      const content = (commentData.content || '').trim();
+      const parentCommentId = commentData.parent_comment_id || commentData.parentCommentId || null;
+
+      if (!userId || !postId || !content) {
+        throw new Error('User ID, Post ID, and Content are required to comment.');
+      }
+
+      const newComment = {
+        post_id: postId,
+        user_id: userId,
+        parent_comment_id: parentCommentId,
+        content: content
+      };
+
+      const { data, error } = await supabase
+        .from('community_comments')
+        .insert([newComment])
+        .select(`
+          *,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url,
+            username,
+            headline
+          )
+        `)
+        .single();
+
+      if (error) throw error;
+
+      StorageService.createCommunityComment({
+        ...data,
+        author_name: data.profiles?.full_name || 'Community Member',
+        author_avatar: data.profiles?.avatar_url || ''
+      });
+
+      // Notify post author about the comment (fire-and-forget)
+      try {
+        const { data: post } = await supabase.from('community_posts').select('user_id, title').eq('id', postId).maybeSingle();
+        if (post?.user_id && post.user_id !== userId) {
+          const commenterName = data.profiles?.full_name || 'Someone';
+          await this.createNotification({
+            userId: post.user_id,
+            actorId: userId,
+            type: 'community_interaction',
+            title: `${commenterName} commented on "${(post.title || 'your post').slice(0, 60)}"`,
+            message: `"${content.slice(0, 100)}"`,
+            link: `community`
+          });
+        }
+      } catch (_) {}
+
+      notifyDataChange('community_comments');
+      return { data, error: null };
+    } catch (err) {
+      console.warn('[Supabase createCommunityComment fallback]:', err.message || err);
+      try {
+        const localComment = StorageService.createCommunityComment({
+          ...commentData,
+          post_id: commentData.post_id || commentData.postId,
+          user_id: commentData.user_id || StorageService.getCurrentUserId()
+        });
+        return { data: localComment, error: null };
+      } catch (e) {
+        return { data: null, error: err };
+      }
+    }
+  },
+
+  async deleteCommunityComment(commentId, userId) {
+    if (!commentId) return { success: false, error: 'Comment ID is required' };
+    try {
+      let query = supabase.from('community_comments').delete().eq('id', commentId);
+      if (userId) query = query.eq('user_id', userId);
+      const { error } = await query;
+      if (error) throw error;
+
+      if (StorageService.deleteCommunityComment) {
+        StorageService.deleteCommunityComment(commentId);
+      }
+      notifyDataChange('community_comments');
+      return { success: true, error: null };
+    } catch (err) {
+      console.warn('[Supabase deleteCommunityComment fallback]:', err.message || err);
+      if (StorageService.deleteCommunityComment) {
+        StorageService.deleteCommunityComment(commentId);
+      }
+      notifyDataChange('community_comments');
+      return { success: true, error: null };
+    }
+  },
+
+  // Backwards compatibility alias
+  async addCommunityComment(commentData) {
+    return this.createCommunityComment(commentData);
+  },
+
+  // ============================================================================
+  // 12. COMMUNITY VOTES (public.community_votes - like | dislike)
+  // ============================================================================
+  async voteCommunityPost({ postId, userId, voteType = 'like' }) {
+    if (!postId || !userId) {
+      const err = new Error('Post ID and User ID are required.');
+      console.error('[Supabase voteCommunityPost error]:', err);
+      return { data: null, error: err };
+    }
+
+    const normVote = (voteType === 'dislike' || voteType === 'downvote') ? 'downvote' : 'upvote';
+    const clientVoteType = normVote === 'upvote' ? 'like' : 'dislike';
+
+    if (!isUUID(postId) || !isUUID(userId)) {
+      const res = StorageService.toggleVote({
+        userId,
+        targetType: 'discussion',
+        targetId: postId,
+        voteType: normVote
+      });
+      const clientActive = res?.activeVoteType === 'upvote' ? 'like' : (res?.activeVoteType === 'downvote' ? 'dislike' : null);
+      const action = clientActive ? (res.activeVoteType === normVote ? 'created' : 'updated') : 'removed';
+      return { data: { action, vote_type: clientActive }, error: null };
+    }
+
+    try {
+      const { data: existing, error: fetchErr } = await supabase
+        .from('community_votes')
+        .select('*')
+        .eq('target_type', 'post')
+        .eq('target_id', postId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (fetchErr) throw fetchErr;
+
+      if (existing) {
+        if (existing.vote_type === normVote) {
+          // Toggle off: remove vote
+          const { error: delErr } = await supabase
+            .from('community_votes')
+            .delete()
+            .eq('id', existing.id);
+          if (delErr) throw delErr;
+          StorageService.toggleVote({ userId, targetType: 'discussion', targetId: postId, voteType: normVote });
+          notifyDataChange('community_votes');
+          return { data: { action: 'removed', vote_type: null }, error: null };
+        } else {
+          // Switch vote: upvote <-> downvote
+          const { data: updated, error: updateErr } = await supabase
+            .from('community_votes')
+            .update({ vote_type: normVote })
+            .eq('id', existing.id)
+            .select()
+            .single();
+
+          if (updateErr) throw updateErr;
+          StorageService.toggleVote({ userId, targetType: 'discussion', targetId: postId, voteType: normVote });
+          notifyDataChange('community_votes');
+          return { data: { action: 'updated', vote_type: clientVoteType, vote: updated }, error: null };
+        }
+      } else {
+        const { data: created, error: insertErr } = await supabase
+          .from('community_votes')
+          .insert([{
+            user_id: userId,
+            target_type: 'post',
+            target_id: postId,
+            vote_type: normVote
+          }])
+          .select()
+          .single();
+
+        if (insertErr) throw insertErr;
+        StorageService.toggleVote({ userId, targetType: 'discussion', targetId: postId, voteType: normVote });
+        notifyDataChange('community_votes');
+        return { data: { action: 'created', vote_type: clientVoteType, vote: created }, error: null };
+      }
+    } catch (err) {
+      console.warn('[Supabase voteCommunityPost fallback]:', err.message || err);
+      const res = StorageService.toggleVote({
+        userId,
+        targetType: 'discussion',
+        targetId: postId,
+        voteType: normVote
+      });
+      const clientActive = res?.activeVoteType === 'upvote' ? 'like' : (res?.activeVoteType === 'downvote' ? 'dislike' : null);
+      const action = clientActive ? (res.activeVoteType === normVote ? 'created' : 'updated') : 'removed';
+      return { data: { action, vote_type: clientActive }, error: null };
+    }
+  },
+
+  async getCommunityVotes(postId, userId = null) {
+    if (!postId) return { likes: 0, dislikes: 0, userVote: null, total: 0, error: null };
+
+    // Retrieve base counts from storage
+    const allPosts = StorageService.getCommunityPosts() || [];
+    const targetPost = allPosts.find(p => String(p.id) === String(postId));
+    const baseLikes = targetPost ? (targetPost.base_upvotes ?? (targetPost.likes_count || targetPost.upvotes_count || 0)) : 0;
+    const baseDislikes = targetPost ? (targetPost.base_downvotes ?? (targetPost.dislikes_count || targetPost.downvotes_count || 0)) : 0;
+
+    if (!isUUID(postId)) {
+      const res = StorageService.getVotesForTarget('discussion', postId);
+      let userVote = null;
+      if (userId) {
+        const uv = StorageService.getUserVote({ userId, targetType: 'discussion', targetId: postId });
+        if (uv) userVote = uv === 'upvote' ? 'like' : (uv === 'downvote' ? 'dislike' : null);
+      }
+      const likes = baseLikes + res.upvotes;
+      const dislikes = baseDislikes + res.downvotes;
+      return {
+        likes,
+        dislikes,
+        total: likes - dislikes,
+        userVote,
+        error: null
+      };
+    }
+
+    try {
+      const [upRes, downRes] = await Promise.all([
+        supabase.from('community_votes').select('id', { count: 'exact', head: true }).eq('target_type', 'post').eq('target_id', postId).eq('vote_type', 'upvote'),
+        supabase.from('community_votes').select('id', { count: 'exact', head: true }).eq('target_type', 'post').eq('target_id', postId).eq('vote_type', 'downvote')
+      ]);
+
+      if (upRes?.error) throw upRes.error;
+      if (downRes?.error) throw downRes.error;
+
+      let userVote = null;
+      if (userId && isUUID(userId)) {
+        const { data: uv, error: uvErr } = await supabase
+          .from('community_votes')
+          .select('vote_type')
+          .eq('target_type', 'post')
+          .eq('target_id', postId)
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (!uvErr && uv) {
+          userVote = uv.vote_type === 'upvote' ? 'like' : (uv.vote_type === 'downvote' ? 'dislike' : null);
+        }
+      } else if (userId) {
+        const uv = StorageService.getUserVote({ userId, targetType: 'discussion', targetId: postId });
+        if (uv) userVote = uv === 'upvote' ? 'like' : (uv === 'downvote' ? 'dislike' : null);
+      }
+
+      const likes = baseLikes + (upRes?.count || 0);
+      const dislikes = baseDislikes + (downRes?.count || 0);
+
+      return {
+        likes,
+        dislikes,
+        total: likes - dislikes,
+        userVote,
+        error: null
+      };
+    } catch (e) {
+      const res = StorageService.getVotesForTarget('discussion', postId);
+      let userVote = null;
+      if (userId) {
+        const uv = StorageService.getUserVote({ userId, targetType: 'discussion', targetId: postId });
+        if (uv) userVote = uv === 'upvote' ? 'like' : (uv === 'downvote' ? 'dislike' : null);
+      }
+      const likes = baseLikes + (res.upvotes || 0);
+      const dislikes = baseDislikes + (res.downvotes || 0);
+      return {
+        likes,
+        dislikes,
+        total: likes - dislikes,
+        userVote,
+        error: null
+      };
+    }
+  },
+
+  // ============================================================================
+  // 13. MESSAGES (public.messages)
+  // ============================================================================
+  async sendMessage(param1, param2, param3) {
+    let senderId, receiverId, content;
+    if (typeof param1 === 'object' && param1 !== null) {
+      senderId = param1.senderId;
+      receiverId = param1.receiverId;
+      content = param1.content;
+    } else {
+      receiverId = param1;
+      content = param2;
+      const currentUser = await this.getCurrentUser();
+      senderId = currentUser?.id || StorageService.getCurrentUserId();
+    }
+
+    if (!senderId || !receiverId || !content) {
+      const err = new Error('Sender ID, Receiver ID, and Content are required to send a message.');
+      console.error('[Supabase sendMessage error]:', err);
+      return { data: null, error: err };
+    }
+
+    try {
+      const newMsg = {
+        sender_id: senderId,
+        receiver_id: receiverId,
+        content: content.trim(),
+        is_read: false
+      };
+
+      const { data, error } = await supabase
+        .from('messages')
+        .insert([newMsg])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('[Supabase sendMessage error]:', error);
+        return { data: null, error };
+      }
+
+      // Automatically create a notification for the receiver
+      try {
+        const { data: senderProf } = await supabase.from('profiles').select('full_name').eq('id', senderId).maybeSingle();
+        const senderName = senderProf?.full_name || 'An innovator';
+
+        await this.createNotification({
+          userId: receiverId,
+          actorId: senderId,
+          type: 'message',
+          title: `New message from ${senderName}`,
+          message: content.slice(0, 100),
+          link: `/messages?user=${senderId}`
+        });
+      } catch (notifErr) {}
+
+      notifyDataChange('messages');
+      return { data, error: null };
+    } catch (err) {
+      console.error('[Supabase sendMessage exception]:', err);
+      return { data: null, error: err };
+    }
+  },
+
+  async getConversation(userId, otherUserId) {
+    return this.getMessages(userId, otherUserId);
+  },
+
+  async getMessages(userId, otherUserId) {
+    if (!userId || !otherUserId) return { data: [], error: null };
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`and(sender_id.eq.${userId},receiver_id.eq.${otherUserId}),and(sender_id.eq.${otherUserId},receiver_id.eq.${userId})`)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('[Supabase getMessages error]:', error.message || error);
+        return { data: [], error };
+      }
+      return { data: data || [], error: null };
+    } catch (err) {
+      console.error('[Supabase getMessages exception]:', err);
+      return { data: [], error: err };
+    }
+  },
+
+  async getConversations(userId) {
+    if (!userId) return { data: [], error: null };
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select(`
+          id,
+          sender_id,
+          receiver_id,
+          content,
+          message_type,
+          is_read,
+          created_at,
+          sender:sender_id (
+            id,
+            full_name,
+            avatar_url,
+            headline
+          ),
+          receiver:receiver_id (
+            id,
+            full_name,
+            avatar_url,
+            headline
+          )
+        `)
+        .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('[Supabase getConversations error]:', error.message || error);
+        return { data: [], error };
+      }
+
+      // Aggregate raw message rows into deduplicated conversation threads
+      const threadMap = new Map();
+      for (const msg of (data || [])) {
+        // The contact is whoever is NOT the current user
+        const contactId = msg.sender_id === userId ? msg.receiver_id : msg.sender_id;
+        const contactProfile = msg.sender_id === userId ? msg.receiver : msg.sender;
+
+        if (!contactId) continue;
+
+        if (!threadMap.has(contactId)) {
+          threadMap.set(contactId, {
+            id: contactId,
+            user: {
+              id: contactId,
+              name: contactProfile?.full_name || 'Community Member',
+              avatar: contactProfile?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(contactProfile?.full_name || contactId)}`,
+              headline: contactProfile?.headline || 'INNOVEXA Member'
+            },
+            lastMessage: msg.content || '',
+            lastMessageAt: msg.created_at,
+            unreadCount: (!msg.is_read && msg.receiver_id === userId) ? 1 : 0
+          });
+        } else {
+          // Accumulate unread count for subsequent (older) messages in the same thread
+          const existing = threadMap.get(contactId);
+          if (!msg.is_read && msg.receiver_id === userId) {
+            existing.unreadCount = (existing.unreadCount || 0) + 1;
+          }
+        }
+      }
+
+      const threads = Array.from(threadMap.values());
+      return { data: threads, error: null };
+    } catch (err) {
+      console.error('[Supabase getConversations exception]:', err);
+      return { data: [], error: err };
+    }
+  },
+
+  async getUnreadMessagesCount(userId) {
+    if (!userId) return 0;
+    try {
+      const { count, error } = await supabase
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('receiver_id', userId)
+        .eq('is_read', false);
+      if (error) return 0;
+      return count || 0;
+    } catch (e) {
+      return 0;
+    }
+  },
+
+  async markMessageRead(messageId, receiverId) {
+    if (!messageId) return { success: false, error: 'Message ID is required' };
+    try {
+      let query = supabase
+        .from('messages')
+        .update({
+          is_read: true,
+          read_at: new Date().toISOString()
+        })
+        .eq('id', messageId);
+
+      if (receiverId) query = query.eq('receiver_id', receiverId);
+
+      const { error } = await query;
+      if (error) {
+        console.error('[Supabase markMessageRead error]:', error);
+        return { success: false, error };
+      }
+      notifyDataChange('messages');
+      return { success: true, error: null };
+    } catch (e) {
+      console.error('[Supabase markMessageRead exception]:', e);
+      return { success: false, error: e };
+    }
+  },
+
+  async markMessagesAsRead(userId, otherUserId) {
+    if (!userId || !otherUserId) return;
+    try {
+      await supabase
+        .from('messages')
+        .update({
+          is_read: true,
+          read_at: new Date().toISOString()
+        })
+        .eq('receiver_id', userId)
+        .eq('sender_id', otherUserId)
+        .eq('is_read', false);
+
+      notifyDataChange('messages');
+    } catch (e) {
+      console.error('[Supabase markMessagesAsRead exception]:', e);
+    }
+  },
+
+  // ============================================================================
+  // COMMUNITY OPEN CHAT MESSAGES (Stored in Supabase community_posts)
+  // ============================================================================
+  async getCommunityMessages(channel = 'general') {
+    try {
+      const { data, error } = await supabase
+        .from('community_posts')
+        .select(`
+          id,
+          user_id,
+          title,
+          content,
+          tags,
+          created_at,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url,
+            headline,
+            role
+          )
+        `)
+        .contains('tags', [`channel:${channel}`])
+        .order('created_at', { ascending: true })
+        .limit(100);
+
+      if (error) {
+        console.warn('[Supabase getCommunityMessages warning]:', error.message || error);
+        return { data: null, error };
+      }
+
+      if (data && data.length > 0) {
+        const formatted = data.map(msg => ({
+          id: msg.id,
+          channel: channel,
+          sender_id: msg.user_id,
+          sender_name: msg.profiles?.full_name || 'Innovator',
+          sender_role: Array.isArray(msg.profiles?.role) ? msg.profiles.role[0] : (msg.profiles?.role || 'Innovator'),
+          sender_badge: 'MEMBER',
+          sender_avatar: msg.profiles?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(msg.profiles?.full_name || 'Innovator')}`,
+          content: msg.content,
+          timestamp: msg.created_at,
+          reactions: {}
+        }));
+        return { data: formatted, error: null };
+      }
+
+      return { data: [], error: null };
+    } catch (err) {
+      console.error('[Supabase getCommunityMessages exception]:', err);
+      return { data: null, error: err };
+    }
+  },
+
+  async sendCommunityMessage({ channel = 'general', senderId, content }) {
+    if (!senderId || !content) return { data: null, error: 'Sender and content required' };
+    try {
+      const { data, error } = await supabase
+        .from('community_posts')
+        .insert([{
+          user_id: senderId,
+          title: `[#${channel}] Community Lounge Message`,
+          content: content.trim(),
+          post_type: 'DISCUSSION',   // FIXED: constraint requires UPPERCASE
+          tags: ['chat', `channel:${channel}`]
+        }])
+        .select(`
+          id,
+          user_id,
+          title,
+          content,
+          tags,
+          created_at,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url,
+            headline,
+            role
+          )
+        `)
+        .single();
+
+      if (error) {
+        console.warn('[Supabase sendCommunityMessage warning]:', error.message || error);
+        return { data: null, error };
+      }
+
+      const formatted = {
+        id: data.id,
+        channel: channel,
+        sender_id: data.user_id,
+        sender_name: data.profiles?.full_name || 'Innovator',
+        sender_role: Array.isArray(data.profiles?.role) ? data.profiles.role[0] : (data.profiles?.role || 'Innovator'),
+        sender_badge: 'MEMBER',
+        sender_avatar: data.profiles?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(data.profiles?.full_name || 'Innovator')}`,
+        content: data.content,
+        timestamp: data.created_at,
+        reactions: {}
+      };
+
+      notifyDataChange('messages');
+      return { data: formatted, error: null };
+    } catch (err) {
+      console.error('[Supabase sendCommunityMessage exception]:', err);
+      return { data: null, error: err };
+    }
+  },
+
+  async deleteCommunityMessage(messageId, userId) {
+    if (!messageId || !userId) return { data: null, error: 'Message ID and User ID required' };
+    try {
+      const { data, error } = await supabase
+        .from('community_posts')
+        .delete()
+        .eq('id', messageId)
+        .eq('user_id', userId);
+
+      if (error) {
+        console.error('[Supabase deleteCommunityMessage error]:', error);
+        return { data: null, error };
+      }
+      notifyDataChange('messages');
+      return { data, error: null };
+    } catch (err) {
+      console.error('[Supabase deleteCommunityMessage exception]:', err);
+      return { data: null, error: err };
+    }
+  },
+
+  // ============================================================================
+  // 14. NOTIFICATIONS (public.notifications)
+  // ============================================================================
+  async createNotification({ userId, actorId = null, projectId = null, type = 'system', title, message, link = '' }) {
+    if (!userId || !title) return { data: null, error: 'User ID and Title are required' };
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .insert([{
+          user_id: userId,
+          actor_id: actorId,
+          project_id: projectId,
+          type,
+          title: title.trim(),
+          message: (message || '').trim(),
+          link: link || '',
+          is_read: false
+        }])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('[Supabase createNotification error]:', error);
+        return { data: null, error };
+      }
+      notifyDataChange('notifications');
+      return { data, error: null };
+    } catch (e) {
+      console.error('[Supabase createNotification exception]:', e);
+      return { data: null, error: e };
+    }
+  },
+
   async getNotifications(userId) {
     if (!userId) return { data: [], error: null };
-
     try {
       const { data, error } = await supabase
         .from('notifications')
         .select('*')
         .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(50);
 
       if (error) {
-        console.warn('[Supabase getNotifications error]:', error.message || error);
-        return { data: StorageService.getNotificationsForUser(userId), error: null };
+        console.error(`[Supabase getNotifications error for ${userId}]:`, error.message || error);
+        return { data: StorageService.getNotificationsForUser(userId) || [], error };
       }
-
-      if (data && Array.isArray(data)) {
-        try {
-          localStorage.setItem('innovexa_notifications_v2', JSON.stringify(data));
-        } catch (e) {}
-        return { data, error: null };
-      }
-
-      return { data: StorageService.getNotificationsForUser(userId), error: null };
+      return { data: data || [], error: null };
     } catch (err) {
-      console.warn('[Supabase getNotifications exception]:', err);
-      return { data: StorageService.getNotificationsForUser(userId), error: null };
+      console.error('[Supabase getNotifications exception]:', err);
+      return { data: StorageService.getNotificationsForUser(userId) || [], error: err };
     }
   },
 
-  async createNotification({ userId, actorId = null, senderId = null, type = 'SYSTEM_ALERT', title = 'Notification', message, projectId = null, relatedProjectId = null, relatedMessageId = null }) {
-    if (!userId || !message) return null;
-
-    const payload = {
-      user_id: userId,
-      type: type,
-      title: title,
-      message: message,
-      is_read: false
-    };
-
-    try {
-      const { data, error } = await supabase
-        .from('notifications')
-        .insert([payload])
-        .select()
-        .maybeSingle();
-
-      if (error) {
-        console.warn('[Supabase createNotification error]:', error.message || error);
-      }
-
-      const storedNotif = StorageService.addNotification({
-        id: data?.id,
-        user_id: userId,
-        actor_id: actorId || senderId,
-        sender_id: actorId || senderId,
-        type,
-        title,
-        message,
-        project_id: relatedProjectId || projectId,
-        related_project_id: relatedProjectId || projectId,
-        related_message_id: relatedMessageId,
-        is_read: false
-      });
-      notifyDataChange('notifications');
-
-      return data || storedNotif;
-    } catch (err) {
-      console.warn('[Supabase createNotification exception]:', err);
-      const fallback = StorageService.addNotification({
-        user_id: userId,
-        actor_id: actorId || senderId,
-        sender_id: actorId || senderId,
-        type,
-        title,
-        message,
-        project_id: relatedProjectId || projectId,
-        related_project_id: relatedProjectId || projectId,
-        related_message_id: relatedMessageId,
-        is_read: false
-      });
-      notifyDataChange('notifications');
-      return fallback;
-    }
+  async markNotificationRead(notificationId, userId = null) {
+    return this.markNotificationAsRead(notificationId, userId);
   },
 
-  async markNotificationAsRead(notificationId, userId) {
+  async markNotificationAsRead(notificationId, userId = null) {
     if (!notificationId) return;
-
     try {
-      await supabase
+      let query = supabase
         .from('notifications')
-        .update({ is_read: true })
+        .update({
+          is_read: true,
+          read_at: new Date().toISOString()
+        })
         .eq('id', notificationId);
 
-      StorageService.markNotificationRead(notificationId);
+      if (userId) query = query.eq('user_id', userId);
+
+      await query;
       notifyDataChange('notifications');
-    } catch (err) {
-      StorageService.markNotificationRead(notificationId);
+    } catch (e) {
+      console.error('[Supabase markNotificationAsRead exception]:', e);
     }
+  },
+
+  async markAllNotificationsRead(userId) {
+    return this.markAllNotificationsAsRead(userId);
   },
 
   async markAllNotificationsAsRead(userId) {
     if (!userId) return;
-
     try {
       await supabase
         .from('notifications')
-        .update({ is_read: true })
-        .eq('user_id', userId);
+        .update({
+          is_read: true,
+          read_at: new Date().toISOString()
+        })
+        .eq('user_id', userId)
+        .eq('is_read', false);
 
-      StorageService.markAllNotificationsRead(userId);
       notifyDataChange('notifications');
-    } catch (err) {
-      StorageService.markAllNotificationsRead(userId);
+    } catch (e) {
+      console.error('[Supabase markAllNotificationsAsRead exception]:', e);
     }
   },
 
   // ============================================================================
-  // 7. EXTERNAL INNOVATION DISCOVERY ENGINE (Discovered Signals)
+  // 15. COMMUNITY COMMENTS (public.community_comments)
   // ============================================================================
-  async getExternalInnovations(filters = {}) {
-    const apiBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
-
-    // 1. Try Backend API first if server is running
-    try {
-      const params = new URLSearchParams();
-      if (filters.category && filters.category !== 'ALL') params.append('category', filters.category);
-      if (filters.source && filters.source !== 'ALL') params.append('source', filters.source);
-      if (filters.search) params.append('search', filters.search);
-      if (filters.sort_by) params.append('sort_by', filters.sort_by);
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`${apiBase}/external-innovations?${params.toString()}`, { signal: controller.signal });
-      clearTimeout(timeoutId);
-
-      if (res.ok) {
-        const json = await res.json();
-        if (json && json.data && json.data.length > 0) {
-          // Sync with local storage
-          json.data.forEach(item => StorageService.saveExternalInnovation(item));
-          return { data: json.data, error: null, source: 'backend' };
-        }
-      }
-    } catch (e) {
-      // Backend not running or timeout -> proceed to Supabase / Local Storage
-    }
-
-    // 2. Try Supabase Table
-    try {
-      let query = supabase
-        .from('external_innovations')
-        .select('*')
-        .eq('is_active', true)
-        .order('published_at', { ascending: false });
-
-      if (filters.category && filters.category !== 'ALL') {
-        query = query.eq('category', filters.category);
-      }
-      if (filters.source && filters.source !== 'ALL') {
-        query = query.eq('source_name', filters.source);
-      }
-
-      const { data, error } = await query;
-      if (!error && data && data.length > 0) {
-        data.forEach(item => StorageService.saveExternalInnovation(item));
-        return { data, error: null, source: 'supabase' };
-      }
-    } catch (e) {
-      console.warn('[Supabase external_innovations fetch exception]:', e);
-    }
-
-    // 3. Fallback to Local Storage
-    return { data: StorageService.getExternalInnovations(filters), error: null, source: 'local' };
-  },
-
-  async likeExternalInnovation(id) {
-    if (!id) return null;
-    const apiBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
-
-    // 1. Update local storage
-    const updated = StorageService.toggleLikeExternalInnovation(id);
-
-    // 2. Try Backend
-    try {
-      fetch(`${apiBase}/external-innovations/${id}/like`, { method: 'POST' }).catch(() => {});
-    } catch (e) {}
-
-    // 3. Try Supabase
-    try {
-      if (updated) {
-        await supabase
-          .from('external_innovations')
-          .update({ likes_count: updated.likes_count })
-          .eq('id', id);
-      }
-    } catch (e) {}
-
-    return updated;
-  },
-
-  async deleteExternalInnovation(id) {
-    if (!id) return false;
-    const apiBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
-
-    StorageService.deleteExternalInnovation(id);
-
-    try {
-      fetch(`${apiBase}/external-innovations/${id}`, { method: 'DELETE' }).catch(() => {});
-      await supabase.from('external_innovations').delete().eq('id', id);
-    } catch (e) {}
-
-    return true;
-  },
-
-  async triggerDiscoveryIngestion() {
-    const apiBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
-    try {
-      const res = await fetch(`${apiBase}/external-innovations/ingest`, { method: 'POST' });
-      if (res.ok) {
-        const json = await res.json();
-        notifyDataChange('externalInnovations');
-        return { success: true, message: json.message, report: json.report };
-      }
-    } catch (e) {
-      console.warn('[Discovery Ingestion Trigger Notice]:', e.message);
-    }
-
-    // Local refresh fallback
-    notifyDataChange('externalInnovations');
-    return { success: true, message: 'Discovery feed synchronized with latest global intelligence signals.' };
-  },
-
-  async getExternalSources() {
-    const apiBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
-    try {
-      const res = await fetch(`${apiBase}/external-innovations/sources`);
-      if (res.ok) {
-        const json = await res.json();
-        return { data: json.data || StorageService.getExternalSources(), error: null };
-      }
-    } catch (e) {}
-
-    return { data: StorageService.getExternalSources(), error: null };
-  },
-
-  async toggleExternalSource(sourceId) {
-    const apiBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
-    const localUpdated = StorageService.toggleExternalSource(sourceId);
-
-    try {
-      fetch(`${apiBase}/external-innovations/sources/${sourceId}/toggle`, { method: 'POST' }).catch(() => {});
-    } catch (e) {}
-
-    return localUpdated;
-  },
-
-  // ============================================================================
-  // 8. COMMUNITY HUB, DISCUSSIONS, RESOURCES & VOTING
-  // ============================================================================
-
-  async getCommunityPosts(filters = {}) {
-    try {
-      let query = supabase
-        .from("community_posts")
-        .select(`
-          *,
-          profiles (
-            id,
-            full_name
-          )
-        `)
-        .order("created_at", {
-          ascending: false
-        });
-
-      if (filters.category && filters.category !== 'ALL') {
-        query = query.eq('category_id', filters.category);
-      }
-      if (filters.postType && filters.postType !== 'ALL') {
-        query = query.eq('post_type', filters.postType);
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.error("Failed to fetch community posts:", error);
-
-        // Fallback to flat query if join constraint differs
-        const fallback = await supabase
-          .from('community_posts')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (!fallback.error && fallback.data && fallback.data.length > 0) {
-          return { data: fallback.data, error: null };
-        }
-        return { data: StorageService.getCommunityPosts(filters), error: null };
-      }
-
-      if (data && Array.isArray(data)) {
-        return { data, error: null };
-      }
-    } catch (e) {
-      console.warn('[Supabase community_posts exception]:', e);
-    }
-    return { data: StorageService.getCommunityPosts(filters), error: null };
-  },
-
-  async createCommunityPost(arg1, arg2) {
-    const content = typeof arg1 === 'string' ? arg1 : (arg1?.content || '');
-    const postType = typeof arg1 === 'string' ? (arg2 || 'discussion') : (arg1?.post_type || arg1?.postType || 'discussion');
-
-    const {
-      data: { user },
-      error: authError
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      console.error("User is not authenticated");
-      return;
-    }
-
-    if (!content?.trim()) {
-      console.error("Community post content is missing");
-      return;
-    }
-
-    const trimmedContent = content.trim();
-
-    const { data, error } = await supabase
-      .from("community_posts")
-      .insert({
-        user_id: user.id,
-        content: trimmedContent,
-        post_type: postType || "discussion"
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error("Community post failed:", error);
-      const localPost = StorageService.createCommunityPost({
-        user_id: user.id,
-        content: trimmedContent,
-        post_type: postType || "discussion",
-        author_name: user.user_metadata?.full_name || 'Innovator',
-        author_avatar: user.user_metadata?.avatar_url || ''
-      });
-      notifyDataChange('community');
-      return { data: localPost, error: null };
-    }
-
-    StorageService.createCommunityPost({
-      id: data.id,
-      user_id: user.id,
-      content: trimmedContent,
-      post_type: data.post_type || postType || "discussion",
-      author_name: user.user_metadata?.full_name || 'Innovator',
-      author_avatar: user.user_metadata?.avatar_url || '',
-      created_at: data.created_at
-    });
-
-    notifyDataChange('community');
-    return { data, error: null };
-  },
-
   async getCommunityComments(postId) {
+    if (!postId) return { data: [], error: null };
     try {
       const { data, error } = await supabase
         .from('community_comments')
-        .select('*')
+        .select(`
+          id,
+          post_id,
+          user_id,
+          parent_comment_id,
+          content,
+          created_at,
+          updated_at,
+          profiles:user_id (
+            id,
+            full_name,
+            avatar_url,
+            headline,
+            role
+          )
+        `)
         .eq('post_id', postId)
         .order('created_at', { ascending: true });
 
-      if (!error && data) return { data, error: null };
-    } catch (e) {
-      console.warn('[Supabase community_comments exception]:', e);
+      if (error) {
+        console.warn(`[Supabase getCommunityComments warning for post ${postId}]:`, error.message || error);
+        return { data: StorageService.getCommentsForCommunityPost?.(postId) || [], error };
+      }
+
+      const formatted = (data || []).map(c => ({
+        id: c.id,
+        post_id: c.post_id,
+        user_id: c.user_id,
+        author_id: c.user_id,
+        parent_comment_id: c.parent_comment_id,
+        content: c.content,
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+        author_name: c.profiles?.full_name || 'Community Member',
+        author_avatar: c.profiles?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(c.profiles?.full_name || 'Member')}&backgroundColor=20212a,58b8ad,9b8ae5`,
+        author_headline: c.profiles?.headline || 'Innovator',
+        author_role: Array.isArray(c.profiles?.role) ? c.profiles.role[0] : (c.profiles?.role || 'member')
+      }));
+
+      return { data: formatted, error: null };
+    } catch (err) {
+      console.error('[Supabase getCommunityComments exception]:', err);
+      return { data: StorageService.getCommentsForCommunityPost?.(postId) || [], error: err };
     }
-    return { data: StorageService.getCommunityComments(postId), error: null };
   },
 
-  async createCommunityComment(commentData) {
-    const localComment = StorageService.createCommunityComment(commentData);
-
+  async createCommunityComment({ post_id, content, parent_comment_id = null, user_id = null }) {
+    if (!post_id || !content) return { data: null, error: 'Post ID and content are required' };
     try {
+      const activeUserId = user_id || (supabase.auth.getUser ? (await supabase.auth.getUser()).data?.user?.id : null);
       const { data, error } = await supabase
         .from('community_comments')
         .insert([{
-          id: localComment.id,
-          post_id: localComment.post_id,
-          user_id: localComment.user_id,
-          parent_comment_id: localComment.parent_comment_id,
-          content: localComment.content
+          post_id,
+          user_id: activeUserId,
+          content: content.trim(),
+          parent_comment_id: parent_comment_id || null
         }])
-        .select()
-        .single();
-
-      if (!error && data) return { data, error: null };
-    } catch (e) {
-      console.warn('[Supabase createCommunityComment exception]:', e);
-    }
-    return { data: localComment, error: null };
-  },
-
-  async getCommunityResources(filters = {}) {
-    try {
-      let query = supabase
-        .from('community_resources')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (filters.category && filters.category !== 'ALL') {
-        query = query.eq('category_id', filters.category);
-      }
-      if (filters.resourceType && filters.resourceType !== 'ALL') {
-        query = query.eq('resource_type', filters.resourceType);
-      }
-
-      const { data, error } = await query;
-      if (!error && data && data.length > 0) {
-        return { data, error: null };
-      }
-    } catch (e) {
-      console.warn('[Supabase community_resources exception]:', e);
-    }
-    return { data: StorageService.getCommunityResources(filters), error: null };
-  },
-
-  async createCommunityResource(resourceData) {
-    const localRes = StorageService.createCommunityResource(resourceData);
-
-    try {
-      const { data, error } = await supabase
-        .from('community_resources')
-        .insert([{
-          id: localRes.id,
-          user_id: localRes.user_id,
-          title: localRes.title,
-          description: localRes.description,
-          resource_url: localRes.resource_url,
-          resource_type: localRes.resource_type,
-          category_id: localRes.category_id,
-          category_name: localRes.category_name,
-          tags: localRes.tags
-        }])
-        .select()
-        .single();
-
-      if (!error && data) return { data, error: null };
-    } catch (e) {
-      console.warn('[Supabase createCommunityResource exception]:', e);
-    }
-    return { data: localRes, error: null };
-  },
-
-
-
-  async getUserInnovationInsights(userId) {
-    return StorageService.getUserInnovationInsights(userId);
-  },
-
-  // ============================================================================
-  // 6. DIRECT MESSAGING & CONVERSATIONS
-  // ============================================================================
-  async getConversations(userId) {
-    if (!userId) return { data: [], error: null };
-    try {
-      // Try querying messages table if available
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
-        .order('created_at', { ascending: false });
-
-      if (!error && data && data.length > 0) {
-        // Sync to local
-        data.forEach(m => {
-          const local = StorageService.getAllMessages();
-          if (!local.some(l => l.id === m.id)) {
-            local.push(m);
-            localStorage.setItem('innovexa_messages_v2', JSON.stringify(local));
-          }
-        });
-      }
-    } catch (e) {
-      // Fallback cleanly to storage
-    }
-    const convs = StorageService.getConversations(userId);
-    return { data: convs, error: null };
-  },
-
-  async fetchConversation(otherUserId) {
-    try {
-      const {
-        data: { user },
-        error: authError
-      } = await supabase.auth.getUser();
-
-      if (authError || !user) {
-        console.error("User is not authenticated");
-        return [];
-      }
-
-      if (!otherUserId) return [];
-
-      const { data, error } = await supabase
-        .from("messages")
         .select(`
-          *,
-          sender:profiles!messages_sender_id_fkey (
+          id,
+          post_id,
+          user_id,
+          parent_comment_id,
+          content,
+          created_at,
+          updated_at,
+          profiles:user_id (
             id,
-            full_name
-          ),
-          receiver:profiles!messages_receiver_id_fkey (
-            id,
-            full_name
+            full_name,
+            avatar_url,
+            headline,
+            role
           )
         `)
-        .or(
-          `and(sender_id.eq.${user.id},receiver_id.eq.${otherUserId}),` +
-          `and(sender_id.eq.${otherUserId},receiver_id.eq.${user.id})`
-        )
-        .order("created_at", {
-          ascending: true
-        });
+        .single();
 
       if (error) {
-        console.error("Failed to load messages:", error);
-
-        // Fallback without foreign key alias in case constraint name differs in Supabase
-        const fallback = await supabase
-          .from("messages")
-          .select("*")
-          .or(
-            `and(sender_id.eq.${user.id},receiver_id.eq.${otherUserId}),` +
-            `and(sender_id.eq.${otherUserId},receiver_id.eq.${user.id})`
-          )
-          .order("created_at", { ascending: true });
-
-        if (!fallback.error && fallback.data) {
-          return fallback.data;
-        }
-
-        return StorageService.getMessages(user.id, otherUserId) || [];
+        console.error('[Supabase createCommunityComment error]:', error);
+        return { data: null, error };
       }
 
-      return data || [];
+      const formatted = {
+        id: data.id,
+        post_id: data.post_id,
+        user_id: data.user_id,
+        author_id: data.user_id,
+        parent_comment_id: data.parent_comment_id,
+        content: data.content,
+        created_at: data.created_at,
+        updated_at: data.updated_at,
+        author_name: data.profiles?.full_name || 'Community Member',
+        author_avatar: data.profiles?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(data.profiles?.full_name || 'Member')}&backgroundColor=20212a,58b8ad,9b8ae5`,
+        author_headline: data.profiles?.headline || 'Innovator',
+        author_role: Array.isArray(data.profiles?.role) ? data.profiles.role[0] : (data.profiles?.role || 'member')
+      };
+
+      notifyDataChange('community');
+      return { data: formatted, error: null };
     } catch (err) {
-      console.error("fetchConversation exception:", err);
-      return [];
+      console.error('[Supabase createCommunityComment exception]:', err);
+      return { data: null, error: err };
     }
   },
 
-  async getMessages(userId, otherUserId) {
-    if (!otherUserId) return { data: [], error: null };
-    const msgs = await this.fetchConversation(otherUserId);
-    if (msgs && msgs.length > 0) {
-      return { data: msgs, error: null };
-    }
-    const fallbackMsgs = StorageService.getMessages(userId, otherUserId);
-    return { data: fallbackMsgs, error: null };
-  },
-
-  async sendMessage(arg1, arg2, arg3) {
-    const receiverId = typeof arg1 === 'string' ? arg1 : (arg1?.receiverId || arg1?.receiver_id);
-    const content = typeof arg1 === 'string' ? arg2 : (arg1?.content || arg2);
-    const messageType = typeof arg1 === 'string' ? (arg3 || 'message') : (arg1?.message_type || arg1?.messageType || arg3 || 'message');
-
-    const {
-      data: { user },
-      error: authError
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      console.error("User is not authenticated");
-      return;
-    }
-
-    if (!receiverId || !content?.trim()) {
-      console.error("Receiver or message is missing");
-      return;
-    }
-
-    if (receiverId === user.id) {
-      console.error("Sender and receiver must be different");
-      return;
-    }
-
-    const trimmed = content.trim();
-
-    const { data, error } = await supabase
-      .from("messages")
-      .insert({
-        sender_id: user.id,
-        receiver_id: receiverId,
-        content: trimmed,
-        message_type: messageType
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error("Message failed:", error);
-      const localMsg = StorageService.addMessage({
-        sender_id: user.id,
-        receiver_id: receiverId,
-        content: trimmed,
-        message_type: messageType,
-        sender_name: user.user_metadata?.full_name || 'Innovator',
-        sender_avatar: user.user_metadata?.avatar_url || ''
-      });
-      notifyDataChange('messages');
-      return localMsg;
-    }
-
-    console.log("Message sent:", data);
-
-    StorageService.addMessage({
-      id: data.id,
-      sender_id: user.id,
-      receiver_id: receiverId,
-      content: trimmed,
-      message_type: data.message_type || messageType,
-      sender_name: user.user_metadata?.full_name || 'Innovator',
-      sender_avatar: user.user_metadata?.avatar_url || '',
-      created_at: data.created_at
-    });
-
-    // Create notification for receiver
-    const notifTitle = messageType === 'suggestion' ? 'New Innovation Suggestion' : 'New Direct Message';
-    const notifType = messageType === 'suggestion' ? 'SUGGESTION' : 'MESSAGE';
-    const snippet = trimmed.length > 60 ? trimmed.substring(0, 57) + '...' : trimmed;
-    await this.createNotification({
-      userId: receiverId,
-      actorId: user.id,
-      senderId: user.id,
-      type: notifType,
-      title: notifTitle,
-      message: `${user.user_metadata?.full_name || 'An innovator'} sent you a ${messageType}: "${snippet}"`,
-      relatedMessageId: data.id
-    });
-
-    notifyDataChange('messages');
-    notifyDataChange('notifications');
-    return data;
-  },
-
-  async markMessagesAsRead(userId, senderId) {
-    if (!userId || !senderId) return;
+  async deleteCommunityComment(commentId, userId = null) {
+    if (!commentId) return { success: false, error: 'Comment ID is required' };
     try {
-      await supabase
-        .from('messages')
-        .update({ is_read: true })
-        .match({ receiver_id: userId, sender_id: senderId });
-    } catch (e) {}
-    StorageService.markMessagesAsRead(userId, senderId);
-  },
-
-  async getAllProjectLikes() {
-    try {
-      const { data, error } = await supabase.from('project_likes').select('*');
+      let query = supabase.from('community_comments').delete().eq('id', commentId);
+      if (userId) query = query.eq('user_id', userId);
+      const { data, error } = await query;
       if (error) {
-        return { data: [], error };
+        console.error('[Supabase deleteCommunityComment error]:', error);
+        return { success: false, error };
       }
-      return { data: data || [], error: null };
-    } catch (e) {
-      return { data: [], error: null };
+      notifyDataChange('community');
+      return { success: true, error: null };
+    } catch (err) {
+      console.error('[Supabase deleteCommunityComment exception]:', err);
+      return { success: false, error: err };
     }
   },
 
+
+
   // ============================================================================
-  // 6. COMPREHENSIVE INSIGHTS TELEMETRY (PERSONAL & PLATFORM AGGREGATIONS)
+  // REAL-TIME SUBSCRIPTIONS
   // ============================================================================
-  async getInsightsData(userId) {
+  _createRealtimeSubscription({ channelName, schema = 'public', table, filter, event = '*', callback }) {
+    if (typeof callback !== 'function' || !channelName || !table) return () => {};
     try {
-      // 1. Fetch real Supabase datasets with storage fallback
-      const [projsRes, revsRes, likesRes, catsRes] = await Promise.all([
-        this.getProjects(),
-        this.getReviews(),
-        this.getAllProjectLikes(),
-        this.getCategories()
+      // 1. Check for any existing channel with this name/topic and remove it first
+      const existingChannels = typeof supabase.getChannels === 'function' ? supabase.getChannels() : [];
+      const found = existingChannels.find(ch => ch.topic === `realtime:${channelName}` || ch.topic === channelName);
+      if (found) {
+        try { supabase.removeChannel(found); } catch (_) {}
+      }
+
+      // 2. Create channel instance
+      const channel = supabase.channel(channelName);
+      
+      const config = { event, schema, table };
+      if (filter) config.filter = filter;
+
+      // 3. Register postgres_changes listener BEFORE calling subscribe()
+      channel.on('postgres_changes', config, (payload) => {
+        try {
+          callback(payload);
+        } catch (cbErr) {
+          console.error(`[REALTIME] Error executing callback for ${channelName}:`, cbErr);
+        }
+      });
+
+      // 4. Subscribe LAST
+      channel.subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.warn(`[REALTIME] Subscription channel '${channelName}' encountered CHANNEL_ERROR.`);
+        }
+      });
+
+      // 5. Return cleanup function
+      return () => {
+        try {
+          supabase.removeChannel(channel);
+        } catch (unsubErr) {
+          console.warn(`[REALTIME] Error removing channel '${channelName}':`, unsubErr);
+        }
+      };
+    } catch (err) {
+      console.warn(`[REALTIME] Failed to initialize subscription for '${channelName}':`, err);
+      return () => {};
+    }
+  },
+
+  subscribeToProjectVotes(projectId, callback) {
+    if (!projectId || typeof callback !== 'function') return () => {};
+    return this._createRealtimeSubscription({
+      channelName: `project-votes-${projectId}`,
+      table: 'project_votes',
+      filter: `project_id=eq.${projectId}`,
+      callback
+    });
+  },
+
+  subscribeToProjectReviews(projectId, callback) {
+    if (!projectId || typeof callback !== 'function') return () => {};
+    return this._createRealtimeSubscription({
+      channelName: `project-reviews-${projectId}`,
+      table: 'reviews',
+      filter: `project_id=eq.${projectId}`,
+      callback
+    });
+  },
+
+  subscribeToProjectLikes(projectId, callback) {
+    if (!projectId || typeof callback !== 'function') return () => {};
+    return this._createRealtimeSubscription({
+      channelName: `project-likes-${projectId}`,
+      table: 'project_votes',
+      filter: `project_id=eq.${projectId}`,
+      callback
+    });
+  },
+
+  subscribeToMessages(userId, callback) {
+    if (!userId || typeof callback !== 'function') return () => {};
+    return this._createRealtimeSubscription({
+      channelName: `messages-${userId}`,
+      table: 'messages',
+      event: 'INSERT',
+      filter: `receiver_id=eq.${userId}`,
+      callback
+    });
+  },
+
+  subscribeToNotifications(userId, callback) {
+    if (!userId || typeof callback !== 'function') return () => {};
+    return this._createRealtimeSubscription({
+      channelName: `notifications-${userId}`,
+      table: 'notifications',
+      event: 'INSERT',
+      filter: `user_id=eq.${userId}`,
+      callback
+    });
+  },
+
+  subscribeToCommunityPosts(callback) {
+    if (typeof callback !== 'function') return () => {};
+    return this._createRealtimeSubscription({
+      channelName: 'community-posts-global',
+      table: 'community_posts',
+      callback
+    });
+  },
+
+  subscribeToCommunityComments(postId, callback) {
+    if (!postId || typeof callback !== 'function') return () => {};
+    return this._createRealtimeSubscription({
+      channelName: `community-comments-${postId}`,
+      table: 'community_comments',
+      filter: `post_id=eq.${postId}`,
+      callback
+    });
+  },
+
+  // ============================================================================
+  // ANALYTICS & AGGREGATIONS
+  // ============================================================================
+  async getUserDashboardSummary(userId) {
+    if (!userId) {
+      return {
+        data: {
+          my_projects: [],
+          my_projects_count: 0,
+          published_projects: [],
+          published_projects_count: 0,
+          draft_projects: [],
+          draft_projects_count: 0,
+          total_views: 0,
+          upvotes: 0,
+          downvotes: 0,
+          reviews_received_count: 0,
+          suggestions_count: 0,
+          followers_count: 0,
+          unread_notifications_count: 0,
+          unread_messages_count: 0,
+          recent_activity: []
+        },
+        error: null
+      };
+    }
+
+    try {
+      // 1. Fetch user projects, notifications, and received messages in parallel
+      const [
+        projsRes,
+        notifsRes,
+        msgsRes
+      ] = await Promise.all([
+        supabase.from('projects').select('*, categories:category_id(name)').eq('user_id', userId).order('created_at', { ascending: false }),
+        supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(30),
+        supabase.from('messages').select('*, sender:sender_id(full_name, avatar_url)').eq('receiver_id', userId).order('created_at', { ascending: false }).limit(30)
       ]);
 
-      const allProjects = projsRes.data || StorageService.getInnovations() || [];
-      const allReviews = revsRes.data || StorageService.getReviews() || [];
-      const allCategories = catsRes.data || StorageService.getCategories() || [];
-      const allResources = StorageService.getCommunityResources() || [];
-      const allPosts = StorageService.getCommunityPosts() || [];
-      const allComments = StorageService.getCommunityComments() || [];
-      const allVotes = StorageService.getVotes() || [];
+      let userProjects = projsRes.data || [];
+      if (userProjects.length === 0) {
+        const localProjs = StorageService.getInnovationsByUserId(userId) || [];
+        if (localProjs.length > 0) userProjects = localProjs;
+      }
 
-      // 2. Personal Insights (for current user)
-      const userProjects = allProjects.filter(p => (p.user_id === userId || p.creator_id === userId) && !p.is_demo);
-      const reviewsGiven = allReviews.filter(r => r.reviewer_id === userId);
-      const resourcesShared = allResources.filter(r => r.user_id === userId);
-      const discussionsStarted = allPosts.filter(p => p.user_id === userId);
-      const discussionComments = allComments.filter(c => c.user_id === userId);
+      const notifications = notifsRes.data || StorageService.getNotificationsForUser?.(userId) || [];
+      const messages = msgsRes.data || StorageService.getMessagesForUser?.(userId) || [];
 
-      const userReviewIds = new Set(reviewsGiven.map(r => r.id));
-      const userPostIds = new Set(discussionsStarted.map(p => p.id));
-      const userResourceIds = new Set(resourcesShared.map(r => r.id));
+      const projectIds = userProjects.map(p => p.id);
+      let votes = [];
+      let reviews = [];
+      let suggestions = [];
+      let follows = [];
 
-      let helpfulVotesReceived = 0;
-      allVotes.forEach(v => {
-        if (v.vote_type === 'upvote') {
-          if (v.target_type === 'review' && userReviewIds.has(v.target_id)) helpfulVotesReceived++;
-          if (v.target_type === 'discussion' && userPostIds.has(v.target_id)) helpfulVotesReceived++;
-          if (v.target_type === 'resource' && userResourceIds.has(v.target_id)) helpfulVotesReceived++;
+      // 2. If user has projects, query votes, reviews, suggestions, follows on those projects
+      if (projectIds.length > 0) {
+        const [
+          votesRes,
+          revsRes,
+          suggRes,
+          follRes
+        ] = await Promise.all([
+          supabase.from('project_votes').select('*, profiles:user_id(full_name, avatar_url)').in('project_id', projectIds).order('created_at', { ascending: false }).limit(40),
+          supabase.from('reviews').select('*, profiles:user_id(full_name, avatar_url)').in('project_id', projectIds).order('created_at', { ascending: false }).limit(40),
+          supabase.from('project_suggestions').select('*, profiles:user_id(full_name, avatar_url)').in('project_id', projectIds).order('created_at', { ascending: false }).limit(40),
+          supabase.from('project_follows').select('*, profiles:user_id(full_name, avatar_url)').in('project_id', projectIds).order('created_at', { ascending: false }).limit(40)
+        ]);
+
+        votes = votesRes.data || [];
+        reviews = revsRes.data || [];
+        suggestions = suggRes.data || [];
+        follows = follRes.data || [];
+
+        // Local storage fallbacks
+        if (votes.length === 0) {
+          projectIds.forEach(pid => {
+            const lv = StorageService.getProjectVotes?.(pid) || [];
+            if (lv.length > 0) votes.push(...lv);
+          });
         }
-      });
-
-      const userProjectIds = new Set(userProjects.map(p => p.id));
-      const receivedReviews = allReviews.filter(r => userProjectIds.has(r.project_id) && (r.is_valid === true || r.review_status === 'VALID' || r.is_valid === undefined));
-
-      let userLikesReceived = 0;
-      let userDislikesReceived = 0;
-      const projectPerformance = userProjects.map(p => {
-        const pReviews = receivedReviews.filter(r => r.project_id === p.id);
-        const pUpvotes = p.upvotes_count || 0;
-        const pDownvotes = p.downvotes_count || 0;
-        userLikesReceived += pUpvotes;
-        userDislikesReceived += pDownvotes;
-
-        const solvesYesCount = pReviews.filter(r => (r.problem_relevance || r.relevance_answer || r.solves_real_problem) === 'YES' || r.problem_relevance === true).length;
-        const avgRating = pReviews.length > 0 ? (pReviews.reduce((acc, r) => acc + Number(r.rating || 5), 0) / pReviews.length).toFixed(1) : null;
-
-        let sentiment = 'NEEDS ATTENTION';
-        if (pReviews.length >= 2) {
-          if (avgRating >= 4.0 && solvesYesCount / pReviews.length >= 0.6) {
-            sentiment = 'POSITIVE';
-          } else if (avgRating >= 3.0) {
-            sentiment = 'MIXED';
-          }
-        } else if (pReviews.length === 1) {
-          sentiment = avgRating >= 4.0 ? 'POSITIVE' : 'MIXED';
-        }
-
-        return {
-          id: p.id,
-          title: p.title,
-          category_name: p.category_name || StorageService.getCategoryName(p.category_id),
-          stage: p.project_stage || (p.creation_type === 'PRODUCT' ? 'prototype' : 'idea'),
-          upvotes_count: pUpvotes,
-          downvotes_count: pDownvotes,
-          reviews_count: pReviews.length,
-          avgRating,
-          solvesYesCount,
-          sentiment,
-          created_at: p.created_at
-        };
-      });
-
-      // Category distribution for user
-      const catCountMap = {};
-      userProjects.forEach(p => {
-        const cName = p.category_name || StorageService.getCategoryName(p.category_id) || 'Technology';
-        catCountMap[cName] = (catCountMap[cName] || 0) + 1;
-      });
-      const categoryDistribution = Object.entries(catCountMap).map(([category, count]) => ({ category, count }));
-
-      const mostReviewedProject = userProjects.length > 0 
-        ? [...projectPerformance].sort((a, b) => b.reviews_count - a.reviews_count)[0] 
-        : null;
-
-      const mostLikedProject = userProjects.length > 0 
-        ? [...projectPerformance].sort((a, b) => b.upvotes_count - a.upvotes_count)[0] 
-        : null;
-
-      let topStrengths = [];
-      let commonConcerns = [];
-      let recommendedAction = userProjects.length > 0
-        ? 'Invite fellow innovators to review your specimen in the community.'
-        : 'Create your first innovation specimen to unlock peer consensus telemetry.';
-
-      if (receivedReviews.length > 0) {
-        topStrengths = receivedReviews
-          .map(r => r.overall_feedback || r.liked_features)
-          .filter(Boolean)
-          .slice(0, 4);
-
-        commonConcerns = receivedReviews
-          .map(r => r.suggestion || r.improvement_suggestions)
-          .filter(Boolean)
-          .slice(0, 4);
-
-        const avgAllRating = (receivedReviews.reduce((acc, r) => acc + Number(r.rating || 5), 0) / receivedReviews.length);
-        if (avgAllRating >= 4.2) {
-          recommendedAction = 'High consensus reached! Proceed to prototype demo or live launch setup.';
-        } else if (avgAllRating >= 3.2) {
-          recommendedAction = 'Iterate on key feedback suggestions before seeking second validation round.';
-        } else {
-          recommendedAction = 'Refine core problem statement and clarify differentiation with peer feedback.';
+        if (reviews.length === 0) {
+          projectIds.forEach(pid => {
+            const lr = StorageService.getReviewsForInnovation?.(pid) || [];
+            if (lr.length > 0) reviews.push(...lr);
+          });
         }
       }
 
-      // 3. Platform & Community Insights (across ALL public projects & data)
-      const nonDemoProjects = allProjects.filter(p => !p.is_demo);
-      const totalProjectsCount = nonDemoProjects.length > 0 ? nonDemoProjects.length : allProjects.length;
+      // Map project titles for fast lookup in activity items
+      const projectTitleMap = {};
+      userProjects.forEach(p => {
+        projectTitleMap[p.id] = cleanProjectTitle(p.title);
+      });
+
+      // 3. Compute Metrics
+      const publishedProjects = userProjects.filter(p => (p.status || '').toUpperCase() === 'PUBLISHED');
+      const draftProjects = userProjects.filter(p => (p.status || '').toUpperCase() !== 'PUBLISHED');
+
+      const totalViews = userProjects.reduce((sum, p) => sum + (p.views_count || p.views || 0), 0);
       
-      // Calculate real trending scores: (upvotes * 2 + reviews * 3 + base)
-      const scoredProjects = allProjects.map(p => {
-        const pRevs = allReviews.filter(r => r.project_id === p.id);
-        const pUpvotes = p.upvotes_count || 0;
-        const trendScore = (pUpvotes * 2) + (pRevs.length * 3);
-        const catName = p.category_name || StorageService.getCategoryName(p.category_id) || 'Technology';
+      const upvotes = votes.filter(v => (v.vote_type || v.type) === 'upvote').length || 
+        userProjects.reduce((sum, p) => sum + (p.upvotes_count || 0), 0);
+      
+      const downvotes = votes.filter(v => (v.vote_type || v.type) === 'downvote').length || 
+        userProjects.reduce((sum, p) => sum + (p.downvotes_count || 0), 0);
 
-        return {
-          ...p,
-          trendScore,
-          reviews_count: pRevs.length,
-          category_name: catName
-        };
+      const reviewsCount = reviews.length || userProjects.reduce((sum, p) => sum + (p.valid_reviews_count || 0), 0);
+      const suggestionsCount = suggestions.length;
+      const followersCount = follows.length;
+
+      const unreadNotificationsCount = notifications.filter(n => !n.is_read).length;
+      const unreadMessagesCount = messages.filter(m => !m.is_read).length;
+
+      // 4. Synthesize Recent Activity Feed (reviews, suggestions, votes, followers, messages)
+      const activityItems = [];
+
+      // New Reviews
+      reviews.forEach(r => {
+        const pTitle = projectTitleMap[r.project_id] || 'your project';
+        const actorName = r.profiles?.full_name || 'A community peer';
+        activityItems.push({
+          id: `rev_${r.id}`,
+          type: 'new_review',
+          title: `New Review on "${pTitle}"`,
+          description: r.overall_feedback ? `"${r.overall_feedback.slice(0, 110)}..."` : `Rated ${r.rating || 5}★ by ${actorName}`,
+          actor_name: actorName,
+          actor_avatar: r.profiles?.avatar_url || '',
+          timestamp: r.created_at,
+          target_id: r.project_id,
+          target_tab: 'detail',
+          badge_color: 'var(--periwinkle)'
+        });
       });
 
-      const trendingProjects = [...scoredProjects]
-        .sort((a, b) => b.trendScore - a.trendScore || new Date(b.created_at) - new Date(a.created_at))
-        .slice(0, 6);
-
-      const recentlyAddedProjects = [...allProjects]
-        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-        .slice(0, 4);
-
-      const mostReviewedProjects = [...scoredProjects]
-        .sort((a, b) => b.reviews_count - a.reviews_count)
-        .slice(0, 4);
-
-      // Popular categories with real project counts
-      const globalCatMap = {};
-      allProjects.forEach(p => {
-        const cName = p.category_name || StorageService.getCategoryName(p.category_id) || 'Technology';
-        globalCatMap[cName] = (globalCatMap[cName] || 0) + 1;
+      // New Suggestions
+      suggestions.forEach(s => {
+        const pTitle = projectTitleMap[s.project_id] || 'your project';
+        const actorName = s.profiles?.full_name || 'An innovator';
+        activityItems.push({
+          id: `sugg_${s.id}`,
+          type: 'new_suggestion',
+          title: `New Suggestion on "${pTitle}"`,
+          description: s.title || s.suggestion || `${s.suggestion_type || 'Feature'} recommendation proposed`,
+          actor_name: actorName,
+          actor_avatar: s.profiles?.avatar_url || '',
+          timestamp: s.created_at,
+          target_id: s.project_id,
+          target_tab: 'detail',
+          badge_color: 'var(--lavender)'
+        });
       });
 
-      const popularCategories = Object.entries(globalCatMap)
-        .map(([name, count]) => ({
-          name,
-          count,
-          percentage: totalProjectsCount > 0 ? Math.round((count / totalProjectsCount) * 100) : 0
-        }))
-        .sort((a, b) => b.count - a.count);
+      // New Votes
+      votes.forEach(v => {
+        const pTitle = projectTitleMap[v.project_id] || 'your project';
+        const isUp = (v.vote_type || v.type) === 'upvote';
+        const actorName = v.profiles?.full_name || 'A community member';
+        activityItems.push({
+          id: `vote_${v.id || v.project_id + v.created_at}`,
+          type: 'new_vote',
+          title: `New ${isUp ? 'Upvote' : 'Vote'} on "${pTitle}"`,
+          description: `${actorName} cast an ${isUp ? 'endorsement upvote' : 'evaluation vote'}`,
+          actor_name: actorName,
+          actor_avatar: v.profiles?.avatar_url || '',
+          timestamp: v.created_at,
+          target_id: v.project_id,
+          target_tab: 'detail',
+          badge_color: isUp ? 'var(--teal)' : 'var(--coral)'
+        });
+      });
 
-      const totalLikes = allProjects.reduce((acc, p) => acc + (p.upvotes_count || 0), 0);
-      const totalReviews = allReviews.length;
+      // New Followers
+      follows.forEach(f => {
+        const pTitle = projectTitleMap[f.project_id] || 'your project';
+        const actorName = f.profiles?.full_name || 'A follower';
+        activityItems.push({
+          id: `foll_${f.id || f.project_id + f.created_at}`,
+          type: 'new_follower',
+          title: `New Follower on "${pTitle}"`,
+          description: `${actorName} subscribed to project launch updates`,
+          actor_name: actorName,
+          actor_avatar: f.profiles?.avatar_url || '',
+          timestamp: f.created_at,
+          target_id: f.project_id,
+          target_tab: 'detail',
+          badge_color: 'var(--coral)'
+        });
+      });
+
+      // New Messages
+      messages.forEach(m => {
+        const senderName = m.sender?.full_name || 'Community Member';
+        activityItems.push({
+          id: `msg_${m.id}`,
+          type: 'new_message',
+          title: `Direct Message from ${senderName}`,
+          description: m.content ? `"${m.content.slice(0, 100)}..."` : 'Sent a new message',
+          actor_name: senderName,
+          actor_avatar: m.sender?.avatar_url || '',
+          timestamp: m.created_at,
+          target_id: m.sender_id,
+          target_tab: 'messages',
+          badge_color: 'var(--apricot)'
+        });
+      });
+
+      // Sort all activity items descending by timestamp
+      activityItems.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
 
       return {
-        personal: {
-          hasPersonalProjects: userProjects.length > 0,
-          projectsCreated: userProjects.length,
-          reviewsReceived: receivedReviews.length,
-          reviewsGiven: reviewsGiven.length,
-          likesReceived: userLikesReceived,
-          dislikesReceived: userDislikesReceived,
-          helpfulVotesReceived,
-          resourcesShared: resourcesShared.length,
-          discussionsStarted: discussionsStarted.length,
-          mostReviewedProject,
-          mostLikedProject,
-          categoryDistribution,
-          projectPerformance,
-          feedbackInsights: {
-            totalReviewsReceived: receivedReviews.length,
-            topStrengths,
-            commonConcerns,
-            recommendedAction
-          },
-          communityImpact: {
-            reviewsReceived: receivedReviews.length,
-            helpfulVotes: helpfulVotesReceived,
-            resourcesShared: resourcesShared.length,
-            discussionParticipation: discussionsStarted.length + discussionComments.length
-          }
+        data: {
+          my_projects: userProjects,
+          my_projects_count: userProjects.length,
+          published_projects: publishedProjects,
+          published_projects_count: publishedProjects.length,
+          draft_projects: draftProjects,
+          draft_projects_count: draftProjects.length,
+          total_views: totalViews,
+          upvotes,
+          downvotes,
+          reviews_received_count: reviewsCount,
+          suggestions_count: suggestionsCount,
+          followers_count: followersCount,
+          unread_notifications_count: unreadNotificationsCount,
+          unread_messages_count: unreadMessagesCount,
+          recent_activity: activityItems.slice(0, 20)
         },
-        platform: {
-          totalProjects: totalProjectsCount,
-          totalReviews,
-          totalLikes,
-          totalCategories: popularCategories.length,
-          popularCategories,
-          trendingProjects,
-          recentlyAddedProjects,
-          mostReviewedProjects,
-          communityVelocityScore: totalProjectsCount * 10 + totalReviews * 15 + totalLikes * 5
-        }
+        error: null
       };
     } catch (err) {
-      console.warn('[Supabase getInsightsData error, using StorageService]:', err);
-      const legacyPersonal = StorageService.getUserInnovationInsights(userId);
+      console.error('[Supabase getUserDashboardSummary exception]:', err);
       return {
-        personal: {
-          hasPersonalProjects: (legacyPersonal?.activity?.projectsCreated || 0) > 0,
-          projectsCreated: legacyPersonal?.activity?.projectsCreated || 0,
-          reviewsReceived: legacyPersonal?.feedbackInsights?.totalReviewsReceived || 0,
-          reviewsGiven: legacyPersonal?.activity?.reviewsGiven || 0,
-          likesReceived: 0,
-          dislikesReceived: 0,
-          helpfulVotesReceived: legacyPersonal?.activity?.helpfulVotesReceived || 0,
-          resourcesShared: legacyPersonal?.activity?.resourcesShared || 0,
-          discussionsStarted: legacyPersonal?.activity?.discussionsStarted || 0,
-          mostReviewedProject: null,
-          mostLikedProject: null,
-          categoryDistribution: [],
-          projectPerformance: legacyPersonal?.projectPerformance || [],
-          feedbackInsights: legacyPersonal?.feedbackInsights || {
-            totalReviewsReceived: 0,
-            topStrengths: [],
-            commonConcerns: [],
-            recommendedAction: 'Invite community members to review your specimen.'
-          },
-          communityImpact: legacyPersonal?.communityImpact || {
-            reviewsReceived: 0,
-            helpfulVotes: 0,
-            resourcesShared: 0,
-            discussionParticipation: 0
-          }
+        data: {
+          my_projects: [],
+          my_projects_count: 0,
+          published_projects: [],
+          published_projects_count: 0,
+          draft_projects: [],
+          draft_projects_count: 0,
+          total_views: 0,
+          upvotes: 0,
+          downvotes: 0,
+          reviews_received_count: 0,
+          suggestions_count: 0,
+          followers_count: 0,
+          unread_notifications_count: 0,
+          unread_messages_count: 0,
+          recent_activity: []
         },
-        platform: {
-          totalProjects: StorageService.getInnovations().length,
-          totalReviews: StorageService.getReviews().length,
-          totalLikes: 0,
-          totalCategories: 6,
-          popularCategories: [],
-          trendingProjects: StorageService.getInnovations().slice(0, 4),
-          recentlyAddedProjects: StorageService.getInnovations().slice(0, 4),
-          mostReviewedProjects: StorageService.getInnovations().slice(0, 4),
-          communityVelocityScore: 100
-        }
+        error: err
       };
+    }
+  },
+
+  async getInsightsData() {
+    try {
+      const [projRes, revRes, userRes, catRes] = await Promise.all([
+        supabase.from('projects').select('id, category_id, status, created_at, project_type'),
+        supabase.from('reviews').select('id, project_id, rating, created_at'),
+        supabase.from('profiles').select('id, reputation_points, role, created_at'),
+        supabase.from('categories').select('id, name, slug')
+      ]);
+
+      const projects = projRes.data || [];
+      const reviews = revRes.data || [];
+      const users = userRes.data || [];
+      const categories = catRes.data || [];
+
+      return {
+        total_projects: projects.length,
+        total_reviews: reviews.length,
+        total_validators: users.length,
+        average_rating: reviews.length > 0 ? (reviews.reduce((acc, r) => acc + (r.rating || 0), 0) / reviews.length).toFixed(1) : '5.0',
+        categories_count: categories.length,
+        projects,
+        reviews,
+        users,
+        categories
+      };
+    } catch (e) {
+      console.error('[Supabase getInsightsData exception]:', e);
+      return {
+        total_projects: 0,
+        total_reviews: 0,
+        total_validators: 0,
+        average_rating: '5.0',
+        categories_count: 6,
+        projects: [],
+        reviews: [],
+        users: [],
+        categories: []
+      };
+    }
+  },
+
+  async voteCommunityItem({ itemId, userId, voteType }) {
+    return this.voteCommunityPost({ postId: itemId, userId, voteType });
+  },
+
+  async isUserFollowingProject(projectId, userId) {
+    try {
+      if (!userId || !projectId) return { following: false, error: null };
+      const { data, error } = await supabase
+        .from('project_follows')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (error) throw error;
+      return { following: Boolean(data), error: null };
+    } catch {
+      const all = StorageService.getProjectFollowers ? StorageService.getProjectFollowers(projectId) : [];
+      return { following: all.includes(userId), error: null };
     }
   },
 
   // ============================================================================
-  // 7. REAL-TIME SUBSCRIPTION CHANNELS
+  // 16. EXTERNAL DISCOVERY SIGNALS (Discovery Engine Integration)
   // ============================================================================
-  subscribeToProjectReviews(projectId, onReview) {
-    if (!projectId || typeof onReview !== 'function') return () => {};
+  async getExternalInnovations(filters = {}) {
+    const cacheKey = `external_innovations:${JSON.stringify(filters)}`;
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
 
-    try {
-      const channel = supabase
-        .channel(`reviews_channel_${projectId}`)
-        .on('postgres_changes', {
-          event: '*',
-          schema: 'public',
-          table: 'reviews',
-          filter: `project_id=eq.${projectId}`
-        }, (payload) => {
-          onReview(payload);
-        })
-        .subscribe();
-
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'reviews') onReview({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-
-      return () => {
-        supabase.removeChannel(channel);
-        window.removeEventListener('innovexa:datachange', localHandler);
-      };
-    } catch (e) {
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'reviews') onReview({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-      return () => window.removeEventListener('innovexa:datachange', localHandler);
-    }
+    const list = StorageService.getExternalInnovations(filters) || [];
+    setCachedQuery(cacheKey, list, 30000);
+    return { data: list, error: null };
   },
 
-  subscribeToProjectLikes(projectId, onLike) {
-    if (!projectId || typeof onLike !== 'function') return () => {};
+  async getExternalInnovationById(id) {
+    if (!id) return { data: null, error: 'ID required' };
+    const cacheKey = `external_innovation:${id}`;
+    const cached = getCachedQuery(cacheKey);
+    if (cached) return { data: cached, error: null };
 
-    try {
-      const channel = supabase
-        .channel(`likes_channel_${projectId}`)
-        .on('postgres_changes', {
-          event: '*',
-          schema: 'public',
-          table: 'project_likes',
-          filter: `project_id=eq.${projectId}`
-        }, (payload) => {
-          onLike(payload);
-        })
-        .subscribe();
-
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'upvotes' || e.detail?.entity === 'innovations') onLike({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-
-      return () => {
-        supabase.removeChannel(channel);
-        window.removeEventListener('innovexa:datachange', localHandler);
-      };
-    } catch (e) {
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'upvotes' || e.detail?.entity === 'innovations') onLike({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-      return () => window.removeEventListener('innovexa:datachange', localHandler);
-    }
+    const item = StorageService.getExternalInnovationById(id);
+    if (item) setCachedQuery(cacheKey, item, 30000);
+    return { data: item || null, error: null };
   },
 
-  subscribeToMessages(userId, onMessage) {
-    if (!userId || typeof onMessage !== 'function') return () => {};
-
-    try {
-      const channel = supabase
-        .channel(`messages_channel_${userId}`)
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `receiver_id=eq.${userId}`
-        }, (payload) => {
-          onMessage(payload);
-        })
-        .subscribe();
-
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'messages') onMessage({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-
-      return () => {
-        supabase.removeChannel(channel);
-        window.removeEventListener('innovexa:datachange', localHandler);
-      };
-    } catch (e) {
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'messages') onMessage({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-      return () => window.removeEventListener('innovexa:datachange', localHandler);
-    }
-  },
-
-  subscribeToNotifications(userId, onNotification) {
-    if (!userId || typeof onNotification !== 'function') return () => {};
-
-    try {
-      const channel = supabase
-        .channel(`notifs_channel_${userId}`)
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${userId}`
-        }, (payload) => {
-          onNotification(payload);
-        })
-        .subscribe();
-
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'notifications') onNotification({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-
-      return () => {
-        supabase.removeChannel(channel);
-        window.removeEventListener('innovexa:datachange', localHandler);
-      };
-    } catch (e) {
-      const localHandler = (e) => {
-        if (e.detail?.entity === 'notifications') onNotification({ eventType: 'LOCAL_CHANGE' });
-      };
-      window.addEventListener('innovexa:datachange', localHandler);
-      return () => window.removeEventListener('innovexa:datachange', localHandler);
-    }
+  async likeExternalInnovation(id) {
+    if (!id) return { data: null, error: 'ID required' };
+    const item = StorageService.toggleLikeExternalInnovation(id);
+    invalidateSupabaseCache('external_innovation');
+    return { data: item || null, error: null };
   }
 };
+

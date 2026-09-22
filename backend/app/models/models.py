@@ -1,188 +1,278 @@
 """
-INNOVEXA SQLAlchemy Data Models (Blueprint Section 30)
-PostgreSQL Schema Definition
+INNOVEXA SQLAlchemy Data Models
+Matches the 15-Table Supabase PostgreSQL Schema Architecture
 """
 
-from sqlalchemy import Column, String, Text, Integer, Float, Boolean, ForeignKey, DateTime, UniqueConstraint
+from sqlalchemy import Column, String, Text, Integer, Float, Boolean, ForeignKey, DateTime, BigInteger, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import declarative_base, relationship
-from datetime import datetime
+from datetime import datetime, timezone
+
+def utcnow():
+    return datetime.now(timezone.utc)
 
 Base = declarative_base()
 
-class User(Base):
-    __tablename__ = 'users'
+# 1. profiles
+class Profile(Base):
+    __tablename__ = 'profiles'
 
-    id = Column(String(64), primary_key=True)
-    name = Column(String(128), nullable=False)
-    email = Column(String(255), unique=True, nullable=False)
+    id = Column(String(64), primary_key=True) # UUID
+    username = Column(String(64), unique=True, nullable=True)
+    full_name = Column(String(128), nullable=False)
+    avatar_url = Column(String(512), nullable=True)
+    headline = Column(String(255), nullable=True)
     bio = Column(Text, nullable=True)
-    profile_image = Column(String(512), nullable=True)
-    role = Column(String(32), default='user')  # user | creator | expert | admin
-    reputation_score = Column(Integer, default=50)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    location = Column(String(128), nullable=True)
+    website = Column(String(512), nullable=True)
+    github_url = Column(String(512), nullable=True)
+    linkedin_url = Column(String(512), nullable=True)
+    role = Column(String(64), default='I CREATE IDEAS')
+    reputation_points = Column(Integer, default=100)
+    projects_count = Column(Integer, default=0)
+    reviews_count = Column(Integer, default=0)
+    profile_visibility = Column(String(32), default='public')
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
-    interests = relationship("UserInterest", back_populates="user", cascade="all, delete-orphan")
-    expertise = relationship("UserExpertise", back_populates="user", cascade="all, delete-orphan")
-    innovations = relationship("Innovation", back_populates="user")
-    reviews = relationship("Review", back_populates="reviewer")
-
-
-class UserInterest(Base):
-    __tablename__ = 'user_interests'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String(64), ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
-    interest_name = Column(String(128), nullable=False)
-
-    user = relationship("User", back_populates="interests")
+    projects = relationship("Project", back_populates="user", cascade="all, delete-orphan")
+    reviews = relationship("Review", back_populates="user", cascade="all, delete-orphan")
 
 
-class UserExpertise(Base):
-    __tablename__ = 'user_expertise'
+# 2. user_private_data
+class UserPrivateData(Base):
+    __tablename__ = 'user_private_data'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String(64), ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
-    domain = Column(String(128), nullable=False)
-    expertise_level = Column(String(32), default='Beginner')  # Beginner | Intermediate | Advanced
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), primary_key=True)
+    phone = Column(String(32), nullable=True)
+    date_of_birth = Column(String(32), nullable=True)
+    address = Column(Text, nullable=True)
+    preferences = Column(Text, default='{}') # JSON string
+    onboarding_completed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
-    user = relationship("User", back_populates="expertise")
 
-
+# 3. categories
 class Category(Base):
     __tablename__ = 'categories'
 
-    id = Column(String(64), primary_key=True)
-    name = Column(String(128), nullable=False)
+    id = Column(String(64), primary_key=True) # UUID
+    name = Column(String(128), unique=True, nullable=False)
+    slug = Column(String(128), unique=True, nullable=False)
     description = Column(Text, nullable=True)
+    icon = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=utcnow)
 
-    innovations = relationship("Innovation", back_populates="category")
+    projects = relationship("Project", back_populates="category")
 
 
-class Innovation(Base):
-    __tablename__ = 'innovations'
+# 4. projects (24 columns)
+class Project(Base):
+    __tablename__ = 'projects'
 
-    id = Column(String(64), primary_key=True)
-    user_id = Column(String(64), ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
+    id = Column(String(64), primary_key=True) # UUID or TEXT
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
     category_id = Column(String(64), ForeignKey('categories.id'), nullable=False)
     title = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, nullable=False)
     short_description = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
-    innovation_type = Column(String(32), default='IDEA')  # IDEA | PRODUCT | STARTUP
-    creation_type = Column(String(32), default='IDEA')    # IDEA | PRODUCT | STARTUP
-    project_stage = Column(String(32), default='idea')    # idea | prototype | mvp | beta | live
-    development_stage = Column(String(32), default='CONCEPT') # CONCEPT, PROTOTYPE, MVP, BETA, LIVE
-    launch_status = Column(String(32), default='validating') # draft | validating | improving | ready_to_launch | published
-    status = Column(String(32), default='UNDER_VALIDATION') # DRAFT | UNDER_VALIDATION | VALIDATION_COMPLETE | PUBLISHED
     problem_statement = Column(Text, nullable=False)
     proposed_solution = Column(Text, nullable=False)
+    project_type = Column(String(32), default='idea') # idea | product | startup
+    project_stage = Column(String(32), default='idea') # idea | prototype | mvp | beta | live
+    innovation_type = Column(String(32), default='idea')
     target_users = Column(Text, nullable=True)
-    technology_stack = Column(Text, nullable=True)  # JSON or comma-separated
-    features = Column(Text, nullable=True)          # JSON list of features
-    images = Column(Text, nullable=True)            # JSON list of image URLs
+    features = Column(Text, nullable=True) # JSON string or array
+    tags = Column(Text, nullable=True)     # JSON string or array
     cover_image = Column(String(512), nullable=True)
-    
-    # Launch & Destination Links (Optional)
-    website_url = Column(String(512), nullable=True)
-    demo_url = Column(String(512), nullable=True)
+    images = Column(Text, nullable=True)   # JSON string or array
+    launch_url = Column(String(512), nullable=True)
     github_url = Column(String(512), nullable=True)
-    app_store_url = Column(String(512), nullable=True)
-    play_store_url = Column(String(512), nullable=True)
-    has_live_product = Column(Boolean, default=False)
-    next_community_action = Column(String(64), default='follow') # follow | waitlist | feedback | contact | prototype
+    demo_url = Column(String(512), nullable=True)
+    status = Column(String(32), default='published') # draft | published | archived
+    is_public = Column(Boolean, default=True)
+    view_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
-    validation_target = Column(Integer, default=10)
-    valid_reviews_count = Column(Integer, default=0)
-    upvotes_count = Column(Integer, default=0)
-    version = Column(Integer, default=1)
-    published_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    user = relationship("User", back_populates="innovations")
-    category = relationship("Category", back_populates="innovations")
-    reviews = relationship("Review", back_populates="innovation")
-    assignments = relationship("ReviewAssignment", back_populates="innovation")
+    user = relationship("Profile", back_populates="projects")
+    category = relationship("Category", back_populates="projects")
+    votes = relationship("ProjectVote", back_populates="project", cascade="all, delete-orphan")
+    suggestions = relationship("ProjectSuggestion", back_populates="project", cascade="all, delete-orphan")
+    reviews = relationship("Review", back_populates="project", cascade="all, delete-orphan")
+    follows = relationship("ProjectFollow", back_populates="project", cascade="all, delete-orphan")
 
 
-class ReviewAssignment(Base):
-    __tablename__ = 'review_assignments'
+# 5. project_votes
+class ProjectVote(Base):
+    __tablename__ = 'project_votes'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    project_id = Column(String(64), ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    vote_type = Column(String(16), nullable=False) # upvote | downvote
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (UniqueConstraint('project_id', 'user_id', name='_user_project_vote_uc'),)
+    project = relationship("Project", back_populates="votes")
+
+
+# 6. project_suggestions
+class ProjectSuggestion(Base):
+    __tablename__ = 'project_suggestions'
 
     id = Column(String(64), primary_key=True)
-    innovation_id = Column(String(64), ForeignKey('innovations.id', ondelete="CASCADE"), nullable=False)
-    reviewer_id = Column(String(64), ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
-    match_score = Column(Float, nullable=False)
-    assignment_status = Column(String(32), default='PENDING') # PENDING | IN_PROGRESS | COMPLETED | EXPIRED
-    assigned_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=False)
-    completed_at = Column(DateTime, nullable=True)
+    project_id = Column(String(64), ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    suggestion_type = Column(String(32), default='general')
+    status = Column(String(32), default='open') # open | accepted | rejected | implemented
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
-    innovation = relationship("Innovation", back_populates="assignments")
+    project = relationship("Project", back_populates="suggestions")
 
 
+# 7. reviews
 class Review(Base):
     __tablename__ = 'reviews'
 
     id = Column(String(64), primary_key=True)
-    innovation_id = Column(String(64), ForeignKey('innovations.id', ondelete="CASCADE"), nullable=False)
-    reviewer_id = Column(String(64), ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
-    problem_relevance = Column(String(16), nullable=False)  # YES | NO
-    solution_usefulness = Column(String(16), nullable=False) # YES | MAYBE | NO
-    would_use = Column(String(16), nullable=False)           # YES | MAYBE | NO
-    rating = Column(Integer, nullable=False)                # 1 to 5
-    liked_text = Column(Text, nullable=True)
-    improvement_text = Column(Text, nullable=True)
-    feature_request = Column(Text, nullable=True)
-    quality_score = Column(Integer, default=80)
-    review_status = Column(String(32), default='VALID')     # VALID | LOW_QUALITY | FLAGGED_SPAM
-    interaction_seconds = Column(Integer, default=0)
-    helpful_votes = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    project_id = Column(String(64), ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    rating = Column(Integer, nullable=False) # 1 to 5
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    is_public = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
-    innovation = relationship("Innovation", back_populates="reviews")
-    reviewer = relationship("User", back_populates="reviews")
+    __table_args__ = (UniqueConstraint('project_id', 'user_id', name='_user_project_review_uc'),)
+    project = relationship("Project", back_populates="reviews")
+    user = relationship("Profile", back_populates="reviews")
+    suggestions = relationship("ReviewSuggestion", back_populates="review", cascade="all, delete-orphan")
+    votes = relationship("ReviewVote", back_populates="review", cascade="all, delete-orphan")
 
 
-class AIInsight(Base):
-    __tablename__ = 'ai_insights'
+# 8. review_suggestions
+class ReviewSuggestion(Base):
+    __tablename__ = 'review_suggestions'
 
     id = Column(String(64), primary_key=True)
-    innovation_id = Column(String(64), ForeignKey('innovations.id', ondelete="CASCADE"), nullable=False)
-    feedback_summary = Column(Text, nullable=True)
-    sentiment = Column(String(32), default='Positive')
-    positive_points = Column(Text, nullable=True)  # JSON string
-    common_problems = Column(Text, nullable=True)  # JSON string
-    feature_requests = Column(Text, nullable=True) # JSON string
-    recommendations = Column(Text, nullable=True)  # JSON string
-    generated_by = Column(String(32), default='GEMINI_AI') # GEMINI_AI | RULE_BASED_FALLBACK
-    created_at = Column(DateTime, default=datetime.utcnow)
+    review_id = Column(String(64), ForeignKey('reviews.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    review = relationship("Review", back_populates="suggestions")
 
 
-class Comment(Base):
-    __tablename__ = 'comments'
+# 9. review_votes
+class ReviewVote(Base):
+    __tablename__ = 'review_votes'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    review_id = Column(String(64), ForeignKey('reviews.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    vote_type = Column(String(16), nullable=False) # helpful | not_helpful
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (UniqueConstraint('review_id', 'user_id', name='_user_review_vote_uc'),)
+    review = relationship("Review", back_populates="votes")
+
+
+# 10. community_posts
+class CommunityPost(Base):
+    __tablename__ = 'community_posts'
 
     id = Column(String(64), primary_key=True)
-    innovation_id = Column(String(64), ForeignKey('innovations.id', ondelete="CASCADE"), nullable=False)
-    user_id = Column(String(64), ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    category_id = Column(String(64), ForeignKey('categories.id'), nullable=True)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    image_url = Column(String(512), nullable=True)
+    tags = Column(Text, nullable=True) # JSON list
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    comments = relationship("CommunityComment", back_populates="post", cascade="all, delete-orphan")
+    votes = relationship("CommunityVote", back_populates="post", cascade="all, delete-orphan")
+
+
+# 11. community_comments
+class CommunityComment(Base):
+    __tablename__ = 'community_comments'
+
+    id = Column(String(64), primary_key=True)
+    post_id = Column(String(64), ForeignKey('community_posts.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
     parent_comment_id = Column(String(64), nullable=True)
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    post = relationship("CommunityPost", back_populates="comments")
 
 
-class Upvote(Base):
-    __tablename__ = 'upvotes'
+# 12. community_votes
+class CommunityVote(Base):
+    __tablename__ = 'community_votes'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    innovation_id = Column(String(64), ForeignKey('innovations.id', ondelete="CASCADE"), nullable=False)
-    user_id = Column(String(64), ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    post_id = Column(String(64), ForeignKey('community_posts.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    vote_type = Column(String(16), nullable=False) # like | dislike
+    created_at = Column(DateTime, default=utcnow)
 
-    __table_args__ = (UniqueConstraint('innovation_id', 'user_id', name='_user_inno_upvote_uc'),)
+    __table_args__ = (UniqueConstraint('post_id', 'user_id', name='_user_post_vote_uc'),)
+    post = relationship("CommunityPost", back_populates="votes")
 
 
-class RecentReviewPair(Base):
-    __tablename__ = 'recent_review_pairs'
+# 13. messages
+class Message(Base):
+    __tablename__ = 'messages'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    reviewer_id = Column(String(64), nullable=False)
-    creator_id = Column(String(64), nullable=False)
-    last_reviewed_at = Column(DateTime, default=datetime.utcnow)
+    id = Column(String(64), primary_key=True) # UUID
+    sender_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    receiver_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    content = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+# 14. notifications
+class Notification(Base):
+    __tablename__ = 'notifications'
+
+    id = Column(String(64), primary_key=True) # UUID
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    actor_id = Column(String(64), ForeignKey('profiles.id', ondelete="SET NULL"), nullable=True)
+    project_id = Column(String(64), ForeignKey('projects.id', ondelete="CASCADE"), nullable=True)
+    type = Column(String(32), default='system')
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=True)
+    link = Column(String(512), nullable=True)
+    is_read = Column(Boolean, default=False)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+
+
+# 15. project_follows
+class ProjectFollow(Base):
+    __tablename__ = 'project_follows'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    project_id = Column(String(64), ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(64), ForeignKey('profiles.id', ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint('project_id', 'user_id', name='_user_project_follow_uc'),)
+    project = relationship("Project", back_populates="follows")

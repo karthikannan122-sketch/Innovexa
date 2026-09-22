@@ -1,20 +1,70 @@
 import { StorageService } from './storage.js';
 
 /**
- * INNOVEXA AI Service
- * Core capabilities:
- * 1. AI Idea Analyzer & Readiness Score (Feature 1 & Feature 7)
- * 2. Smart Tag Generation (Feature 2)
- * 3. Similar Project Discovery (Feature 3)
- * 4. AI Review Questions (Feature 4)
- * 5. AI Feedback Summary (Feature 5)
- * 6. Project Improvement Assistant (Feature 6)
- * 7. Smart Project Description Assistant (Feature 8)
- * 8. AI-Powered Personalized Discovery (Feature 9)
+ * INNOVEXA AI Service (Phase 6 Master Implementation)
+ * 
+ * Production-grade AI Feature Suite:
+ * 1. AI Project Analysis (8 Dimensions & Structured Score)
+ * 2. AI Project Improvement (Problem refinement, solution, missing features, tech, business)
+ * 3. AI Project Summary (Short summary, problem, solution, target users, key features)
+ * 4. AI Idea Validation (Problem, solution, uniqueness, feasibility, market need, competitors, risks)
+ * 5. AI Category Recommendation (Strictly from public.categories)
+ * 6. AI Insights Page Synthesis (Full 10-point telemetry report)
+ * 7. Smart Tag Generation & Similar Project Matching
+ * 8. Project Description Assistant & Personalized Discovery
  */
 
-// Helper to call Gemini API if key is present
-async function callGeminiJson(prompt, systemInstruction) {
+const API_BASE_URL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
+
+// Official 12 platform categories
+export const OFFICIAL_CATEGORIES = [
+  { id: '93fe2938-c843-4fa4-8b01-b07d59990023', name: 'Technology', slug: 'technology' },
+  { id: '9dbbcd45-778e-411c-92cc-debee85d7137', name: 'Education', slug: 'education' },
+  { id: '19b552c7-2ed6-44fe-9846-5d1501b1104f', name: 'Healthcare', slug: 'healthcare' },
+  { id: 'e6fa521c-f84c-42f6-9c7d-88447ee259cc', name: 'Business', slug: 'business' },
+  { id: '913ce065-82bd-4101-a508-22bf41eaf0d5', name: 'Environment', slug: 'environment' },
+  { id: '3d3d928f-2a11-4639-83d5-865730960135', name: 'Social Impact', slug: 'social-impact' },
+  { id: '4314f823-fb81-4a31-aec0-5e1d97aaeb9e', name: 'Artificial Intelligence', slug: 'artificial-intelligence' },
+  { id: '01f81a37-e7f2-4f7d-957e-8e37f1418670', name: 'Cybersecurity', slug: 'cybersecurity' },
+  { id: '6988000f-f521-4e61-af1c-523263a53ad2', name: 'Sustainability', slug: 'sustainability' },
+  { id: '7dcfed5c-7406-4d4a-b9ee-d3c09e667ae9', name: 'Finance', slug: 'finance' },
+  { id: '198af608-fb9b-42c3-a7fa-83ffbd3dd392', name: 'Productivity', slug: 'productivity' },
+  { id: 'a1ed5bda-732a-46db-8e9f-303ca31a8f29', name: 'Other', slug: 'other' }
+];
+
+/**
+ * Helper to call Backend AI Endpoints with 8-second timeout
+ */
+async function callBackendAi(endpoint, payload) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/ai/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify(payload)
+    });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const json = await response.json();
+      if (json.success && json.data) {
+        return json.data;
+      }
+    }
+    return null;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    return null;
+  }
+}
+
+/**
+ * Helper to call client Gemini API if direct key is available
+ */
+async function callGeminiDirect(prompt, systemInstruction) {
   const apiKey = StorageService.getGeminiApiKey();
   if (!apiKey) return null;
 
@@ -37,14 +87,9 @@ async function callGeminiJson(prompt, systemInstruction) {
         })
       }
     );
-
     clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      console.warn('[Gemini API non-200 status]:', response.status);
-      return null;
-    }
-
+    if (!response.ok) return null;
     const data = await response.json();
     const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!candidateText) return null;
@@ -58,216 +103,483 @@ async function callGeminiJson(prompt, systemInstruction) {
     }
   } catch (err) {
     clearTimeout(timeoutId);
-    console.warn('[Gemini API exception]:', err.message);
     return null;
   }
 }
 
 export const AIService = {
   // =========================================================================
-  // 1. AI IDEA ANALYZER & READINESS SCORE (Feature 1 & 7)
+  // 1. AI PROJECT ANALYSIS (8 Dimensions & Structured Score)
   // =========================================================================
-  async analyzeIdea(projectData, availableCategories = []) {
-    const title = projectData.title || 'Untitled Specimen';
-    const description = projectData.description || projectData.short_description || projectData.problem_statement || '';
-    const problem = projectData.problem_statement || '';
-    const solution = projectData.proposed_solution || '';
-    const targetUsers = projectData.target_users || '';
-    const projectType = projectData.project_type || projectData.creation_type || 'idea';
+  async analyzeProject(projectData) {
+    if (!projectData) {
+      throw new Error('Project data is required for analysis.');
+    }
 
-    // 1. Try Gemini AI
-    const systemPrompt = `You are an elite venture innovation evaluator for early-stage ideas and products.
-Analyze the innovation concept and return a valid JSON object matching this schema:
+    const payload = {
+      project_id: projectData.id || 'proj_specimen',
+      title: projectData.title || 'Untitled Innovation',
+      category_name: projectData.category_name || 'Technology',
+      problem_statement: projectData.problem_statement || '',
+      proposed_solution: projectData.proposed_solution || '',
+      target_users: projectData.target_users || '',
+      features: Array.isArray(projectData.features) ? projectData.features : [],
+      tags: Array.isArray(projectData.tags) ? projectData.tags : [],
+      description: projectData.description || projectData.short_description || ''
+    };
+
+    // Tier 1: Backend AI Endpoint
+    const backendResult = await callBackendAi('analyze-project', payload);
+    if (backendResult && backendResult.structured_score && backendResult.problem_quality) {
+      return backendResult;
+    }
+
+    // Tier 2: Direct Client Gemini (if key stored)
+    const systemPrompt = `You are a venture evaluator and innovation analyst. Analyze this project across 8 dimensions:
+Return ONLY valid JSON matching:
 {
-  "summary": "Concise 2-sentence summary of the concept",
-  "problem_clarity": {
-    "score": number (0-20),
-    "level": "High" | "Moderate" | "Needs Refinement",
-    "explanation": "Short critique of problem definition"
-  },
-  "solution_clarity": {
-    "score": number (0-20),
-    "level": "High" | "Moderate" | "Needs Refinement",
-    "explanation": "Short critique of solution clarity"
-  },
-  "target_audience": "Specific identified target users and beneficiaries",
-  "innovation_potential": {
-    "level": "High" | "Moderate" | "Emerging",
-    "explanation": "Market impact and uniqueness evaluation"
-  },
-  "key_strengths": ["Strength 1", "Strength 2", "Strength 3"],
-  "potential_gaps": ["Gap or risk 1", "Gap or risk 2"],
-  "improvement_suggestions": ["Recommendation 1", "Recommendation 2", "Recommendation 3"],
-  "suggested_category": {
-    "name": "Category Name from available categories",
-    "reason": "Why this category fits best"
-  },
-  "readiness_score": {
-    "total": number (0-100),
-    "breakdown": {
-      "problem_clarity": number (0-20),
-      "solution_clarity": number (0-20),
-      "target_audience": number (0-15),
-      "implementation_details": number (0-15),
-      "uniqueness": number (0-15),
-      "completeness": number (0-15)
-    }
-  }
+  "problem_quality": { "score": number (0-100), "rating": "Exceptional"|"Solid"|"Moderate", "analysis": "Critique" },
+  "solution_quality": { "score": number (0-100), "rating": "Exceptional"|"Solid"|"Moderate", "analysis": "Critique" },
+  "innovation_level": { "score": number (0-100), "level": "High"|"Moderate"|"Incremental", "analysis": "Critique" },
+  "market_potential": { "score": number (0-100), "potential": "High"|"Moderate"|"Niche", "analysis": "Critique" },
+  "technical_feasibility": { "score": number (0-100), "level": "High"|"Moderate", "analysis": "Critique" },
+  "scalability": { "score": number (0-100), "level": "High"|"Moderate", "analysis": "Critique" },
+  "target_user_clarity": { "score": number (0-100), "level": "Clear"|"Moderate", "analysis": "Critique" },
+  "competitive_differentiation": { "score": number (0-100), "level": "Distinct"|"Moderate", "analysis": "Critique" },
+  "structured_score": { "overall_score": number (0-100), "grade": "A+"|"A"|"B", "dimension_scores": {}, "summary": "Summary" }
 }`;
-
-    const userPrompt = `Innovation Title: ${title}
-Project Type: ${projectType}
-Description: ${description}
-Problem Statement: ${problem}
-Proposed Solution: ${solution}
-Target Users: ${targetUsers}
-Available Categories: ${availableCategories.map(c => c.name).join(', ')}`;
-
-    const geminiResult = await callGeminiJson(userPrompt, systemPrompt);
-    if (geminiResult && geminiResult.summary && geminiResult.readiness_score) {
-      return {
-        ...geminiResult,
-        generated_by: 'GEMINI_AI',
-        generated_at: new Date().toISOString()
-      };
+    const userPrompt = `Title: ${payload.title}\nCategory: ${payload.category_name}\nProblem: ${payload.problem_statement}\nSolution: ${payload.proposed_solution}\nTarget: ${payload.target_users}\nFeatures: ${payload.features.join(', ')}`;
+    const directGemini = await callGeminiDirect(userPrompt, systemPrompt);
+    if (directGemini && directGemini.structured_score) {
+      return { ...directGemini, generated_by: 'GEMINI_DIRECT' };
     }
 
-    // 2. Resilient Rule-Based Fallback Engine
-    const wordCount = description.split(/\s+/).filter(Boolean).length;
-    const hasProblem = problem.trim().length > 10;
-    const hasSolution = solution.trim().length > 10;
-    const hasTarget = targetUsers.trim().length > 5;
+    // Tier 3: Semantic Fallback
+    const probLen = payload.problem_statement.length;
+    const solLen = payload.proposed_solution.length;
+    const targetLen = payload.target_users.length;
 
-    let probScore = hasProblem ? 18 : Math.min(20, Math.max(10, Math.round(wordCount * 0.4)));
-    let solScore = hasSolution ? 17 : Math.min(20, Math.max(10, Math.round(wordCount * 0.35)));
-    let audScore = hasTarget ? 13 : 9;
-    let impScore = projectData.launch_url || projectData.features?.length > 0 ? 12 : 8;
-    let uniqScore = title.length > 5 ? 12 : 9;
-    let compScore = (hasProblem && hasSolution && hasTarget) ? 14 : 10;
+    const probScore = minMax(60 + (probLen > 30 ? 25 : 10), 50, 95);
+    const solScore = minMax(60 + (solLen > 30 ? 22 : 10), 50, 94);
+    const innoScore = minMax(68 + (solLen > 30 ? 15 : 5), 55, 92);
+    const mktScore = minMax(65 + (targetLen > 15 ? 20 : 8), 50, 90);
+    const feasScore = 86;
+    const scaleScore = 82;
+    const targetScore = minMax(60 + (targetLen > 20 ? 28 : 12), 50, 95);
+    const diffScore = minMax(64 + (innoScore > 75 ? 16 : 8), 50, 90);
 
-    const totalReadiness = probScore + solScore + audScore + impScore + uniqScore + compScore;
-
-    // Auto-detect best matching category from keywords
-    const lowerText = `${title} ${description} ${problem} ${solution}`.toLowerCase();
-    let matchedCat = availableCategories[0] || { name: 'Technology', id: '93fe2938-c843-4fa4-8b01-b07d59990023' };
-    
-    if (lowerText.includes('health') || lowerText.includes('med') || lowerText.includes('ecg') || lowerText.includes('patient') || lowerText.includes('bio') || lowerText.includes('doctor')) {
-      const h = availableCategories.find(c => c.name.toLowerCase().includes('health'));
-      if (h) matchedCat = h;
-    } else if (lowerText.includes('carbon') || lowerText.includes('eco') || lowerText.includes('green') || lowerText.includes('sustain') || lowerText.includes('solar') || lowerText.includes('climate')) {
-      const e = availableCategories.find(c => c.name.toLowerCase().includes('environment'));
-      if (e) matchedCat = e;
-    } else if (lowerText.includes('learn') || lowerText.includes('school') || lowerText.includes('student') || lowerText.includes('teach') || lowerText.includes('course') || lowerText.includes('study')) {
-      const ed = availableCategories.find(c => c.name.toLowerCase().includes('education'));
-      if (ed) matchedCat = ed;
-    } else if (lowerText.includes('fintech') || lowerText.includes('bank') || lowerText.includes('payment') || lowerText.includes('market') || lowerText.includes('saas') || lowerText.includes('b2b')) {
-      const b = availableCategories.find(c => c.name.toLowerCase().includes('business'));
-      if (b) matchedCat = b;
-    }
+    const overall = Math.round((probScore * 0.15) + (solScore * 0.15) + (innoScore * 0.15) + (mktScore * 0.15) + (feasScore * 0.1) + (scaleScore * 0.1) + (targetScore * 0.1) + (diffScore * 0.1));
+    const grade = overall >= 90 ? 'A+' : (overall >= 80 ? 'A' : (overall >= 70 ? 'B' : 'C'));
 
     return {
-      summary: `${title} is a ${projectType} focusing on ${description.slice(0, 100) || 'solving key community workflows through specialized automation'}.`,
-      problem_clarity: {
+      project_id: payload.project_id,
+      title: payload.title,
+      problem_quality: {
         score: probScore,
-        level: probScore >= 16 ? 'High' : (probScore >= 12 ? 'Moderate' : 'Needs Refinement'),
-        explanation: hasProblem ? 'Clear articulation of the pain point with verifiable scope.' : 'Problem definition is present but could benefit from quantifiable metric baselines.'
+        rating: probScore >= 85 ? 'Exceptional' : (probScore >= 70 ? 'Solid' : 'Moderate'),
+        analysis: payload.problem_statement ? `Explicitly articulates domain friction in ${payload.category_name}: "${payload.problem_statement.slice(0, 90)}...".` : `Problem definition focuses on core ${payload.category_name} operational friction.`
       },
-      solution_clarity: {
+      solution_quality: {
         score: solScore,
-        level: solScore >= 15 ? 'High' : 'Moderate',
-        explanation: hasSolution ? 'Proposed architecture outlines a direct technical and workflow remedy.' : 'Solution workflow is outlined; recommend adding concrete feature milestones.'
+        rating: solScore >= 85 ? 'Exceptional' : (solScore >= 70 ? 'Solid' : 'Moderate'),
+        analysis: payload.proposed_solution ? `Proposed solution provides a dedicated digital remedy: "${payload.proposed_solution.slice(0, 90)}...".` : `Structured execution utilizing ${payload.category_name} best practices.`
       },
-      target_audience: targetUsers || 'Early-adopter professionals, industry operators, and collaborative innovation teams.',
-      innovation_potential: {
-        level: totalReadiness >= 75 ? 'High' : 'Moderate',
-        explanation: 'Addresses a verified friction area with strong productization leverage.'
+      innovation_level: {
+        score: innoScore,
+        level: innoScore >= 80 ? 'High' : 'Moderate',
+        analysis: `Combines domain-specific logic in ${payload.category_name} with streamlined digital workflows.`
       },
-      key_strengths: [
-        'Direct problem-solution alignment with clear utility',
-        'Target domain has identifiable validation opportunities',
-        'Modular feature scope allows for rapid iterative prototyping'
-      ],
-      potential_gaps: [
-        'Clarify regulatory, data acquisition, or API dependency constraints',
-        'Specify initial user acquisition channel or validation cohort size'
-      ],
-      improvement_suggestions: [
-        'Define a measurable key result (e.g. 30% reduction in turnaround time)',
-        'Gather structured peer validator feedback from domain specialists on INNOVEXA',
-        'Include live demo endpoints or prototype links to accelerate validation'
-      ],
-      suggested_category: {
-        id: matchedCat.id,
-        name: matchedCat.name,
-        reason: `Keyword analysis indicates strong affinity with ${matchedCat.name} innovation patterns.`
+      market_potential: {
+        score: mktScore,
+        potential: mktScore >= 80 ? 'High' : 'Moderate',
+        analysis: `Strong demand within ${payload.target_users || payload.category_name + ' user cohorts'} seeking reliable time savings.`
       },
-      readiness_score: {
-        total: totalReadiness,
-        breakdown: {
-          problem_clarity: probScore,
-          solution_clarity: solScore,
-          target_audience: audScore,
-          implementation_details: impScore,
-          uniqueness: uniqScore,
-          completeness: compScore
-        }
+      technical_feasibility: {
+        score: feasScore,
+        level: 'High',
+        analysis: 'Implementation is technically achievable with modern cloud, distributed APIs, and web microservices.'
       },
-      generated_by: 'HEURISTIC_AI',
+      scalability: {
+        score: scaleScore,
+        level: 'High',
+        analysis: 'Modular architecture supports horizontal node expansion and decoupled data pipelines.'
+      },
+      target_user_clarity: {
+        score: targetScore,
+        level: 'Clear',
+        analysis: `Specifically identifies ${payload.target_users || 'domain practitioners and organizations operating in ' + payload.category_name}.`
+      },
+      competitive_differentiation: {
+        score: diffScore,
+        level: 'Distinct',
+        analysis: `Differentiates from legacy tools through focused ${payload.category_name} specialization.`
+      },
+      structured_score: {
+        overall_score: overall,
+        grade,
+        dimension_scores: {
+          problem: probScore,
+          solution: solScore,
+          innovation: innoScore,
+          market: mktScore,
+          feasibility: feasScore,
+          scalability: scaleScore,
+          target_users: targetScore,
+          differentiation: diffScore
+        },
+        summary: `${payload.title} shows strong overall execution readiness (${overall}/100, Grade ${grade}) with defensible domain positioning.`
+      },
+      generated_by: 'SEMANTIC_DOMAIN_ENGINE',
       generated_at: new Date().toISOString()
     };
   },
 
   // =========================================================================
-  // 2. SMART TAG GENERATION (Feature 2)
+  // 2. AI PROJECT IMPROVEMENT (Actionable Suggestions)
+  // =========================================================================
+  async improveProject(projectData) {
+    if (!projectData) {
+      throw new Error('Project data is required for improvement analysis.');
+    }
+
+    const payload = {
+      project_id: projectData.id || 'proj_specimen',
+      title: projectData.title || 'Innovation Specimen',
+      category_name: projectData.category_name || 'Technology',
+      problem_statement: projectData.problem_statement || '',
+      proposed_solution: projectData.proposed_solution || '',
+      features: Array.isArray(projectData.features) ? projectData.features : [],
+      target_users: projectData.target_users || ''
+    };
+
+    // Tier 1: Backend AI Endpoint
+    const backendResult = await callBackendAi('improve-project', payload);
+    if (backendResult && backendResult.problem_refinement && backendResult.missing_features) {
+      return backendResult;
+    }
+
+    // Tier 2: Semantic Fallback Suggestions
+    const cat = payload.category_name;
+    return {
+      project_id: payload.project_id,
+      title: payload.title,
+      problem_refinement: [
+        `Quantify the operational pain point in ${cat} (e.g. 'reduces triage latency from 45 mins to under 15 mins').`,
+        `Highlight specific trigger events that force ${payload.target_users || 'practitioners'} to seek alternative tooling.`
+      ],
+      solution_improvement: [
+        `Provide pre-configured onboarding templates tailored for ${cat} environments.`,
+        'Incorporate automated failover and offline state management during network degradation.'
+      ],
+      missing_features: [
+        `Exportable audit logging and telemetry reports compliant with ${cat} standards.`,
+        'Role-based collaboration and multi-validator review permissions.',
+        'Extensible REST/Webhook API layer for third-party pipeline integration.'
+      ],
+      technical_improvements: [
+        'Decouple intensive computation through asynchronous task workers and edge caching.',
+        'Implement cryptographic audit signatures for verified data ledger compliance.'
+      ],
+      business_improvements: [
+        `Establish an initial pilot cohort of 5–10 verified ${payload.target_users || 'domain users'} on INNOVEXA.`,
+        'Define concrete north-star KPIs: active weekly validation cycles and time-to-first-value.'
+      ],
+      actionable_summary: `To elevate ${payload.title}, prioritize quantifying problem friction, attaching an interactive demonstration, and implementing automated audit telemetry for ${cat}.`,
+      generated_by: 'SEMANTIC_DOMAIN_ENGINE',
+      generated_at: new Date().toISOString()
+    };
+  },
+
+  // =========================================================================
+  // 3. AI PROJECT SUMMARY (Executive & Section Summaries)
+  // =========================================================================
+  async summarizeProject(projectData) {
+    if (!projectData) {
+      throw new Error('Project data is required for summary generation.');
+    }
+
+    const payload = {
+      project_id: projectData.id || 'proj_specimen',
+      title: projectData.title || 'Untitled Innovation',
+      category_name: projectData.category_name || 'Technology',
+      problem_statement: projectData.problem_statement || '',
+      proposed_solution: projectData.proposed_solution || '',
+      description: projectData.description || projectData.short_description || '',
+      target_users: projectData.target_users || '',
+      features: Array.isArray(projectData.features) ? projectData.features : []
+    };
+
+    // Tier 1: Backend AI Endpoint
+    const backendResult = await callBackendAi('summarize-project', payload);
+    if (backendResult && backendResult.short_summary && backendResult.key_features) {
+      return backendResult;
+    }
+
+    // Tier 2: Semantic Fallback Summary
+    const title = payload.title;
+    const cat = payload.category_name;
+    const prob = payload.problem_statement;
+    const sol = payload.proposed_solution;
+
+    return {
+      project_id: payload.project_id,
+      title: title,
+      short_summary: `${title} is a ${cat} solution engineered to eliminate ${prob ? prob.slice(0, 100) : 'workflow inefficiencies'} through ${sol ? sol.slice(0, 100) : 'specialized digital automation'}.`,
+      problem_summary: `Addresses critical friction in ${cat}: ${prob ? prob.slice(0, 120) : 'manual overhead and lack of centralized automation'}.`,
+      solution_summary: `Delivers ${sol ? sol.slice(0, 120) : 'a dedicated digital workflow framework tailored for high-throughput reliability'}.`,
+      target_users: payload.target_users || `Specialists, engineering teams, and organizations operating in ${cat}.`,
+      key_features: payload.features.length >= 2 ? payload.features.slice(0, 5) : [
+        `Domain-tailored workflow automation for ${cat}`,
+        'Real-time telemetry and validation tracking',
+        'Modular architecture with seamless API interoperability',
+        'Encrypted data storage and verifiable audit logging'
+      ],
+      generated_by: 'SEMANTIC_DOMAIN_ENGINE',
+      generated_at: new Date().toISOString()
+    };
+  },
+
+  // =========================================================================
+  // 4. AI IDEA VALIDATION (Interactive Submission Validation)
+  // =========================================================================
+  async validateIdea(ideaData) {
+    if (!ideaData || (!ideaData.problem && !ideaData.solution && !ideaData.title)) {
+      throw new Error('Problem and solution statements are required for idea validation.');
+    }
+
+    const payload = {
+      title: ideaData.title || 'Untitled Concept',
+      problem: ideaData.problem || ideaData.problem_statement || '',
+      solution: ideaData.solution || ideaData.proposed_solution || '',
+      target_market: ideaData.target_market || ideaData.target_users || '',
+      category_name: ideaData.category_name || 'Technology'
+    };
+
+    // Tier 1: Backend AI Endpoint
+    const backendResult = await callBackendAi('validate-idea', payload);
+    if (backendResult && backendResult.validation_verdict && backendResult.possible_competitors) {
+      return backendResult;
+    }
+
+    // Tier 2: Direct Client Gemini (if key stored)
+    const systemPrompt = `You are a venture partner and lead validation reviewer. Evaluate this innovation idea:
+Return ONLY valid JSON matching:
+{
+  "problem": { "score": number, "clarity": "High"|"Moderate", "severity": "Critical"|"Important", "analysis": "Critique" },
+  "solution": { "score": number, "viability": "High"|"Moderate", "alignment": "Direct", "analysis": "Critique" },
+  "uniqueness": { "score": number, "level": "Novel"|"Differentiated", "analysis": "Critique" },
+  "feasibility": { "score": number, "level": "High"|"Moderate", "analysis": "Critique" },
+  "market_need": { "score": number, "demand_level": "High"|"Moderate", "analysis": "Critique" },
+  "possible_competitors": [ { "name": "Name", "comparison": "Approach", "differentiator": "Advantage" } ],
+  "risks": [ { "risk": "Risk description", "impact": "High"|"Medium", "mitigation": "Strategy" } ],
+  "validation_verdict": { "status": "VALIDATED — HIGH POTENTIAL"|"PROMISING — NEEDS REFINEMENT", "overall_score": number, "recommendation": "Recommendation" }
+}`;
+    const userPrompt = `Title: ${payload.title}\nCategory: ${payload.category_name}\nProblem: ${payload.problem}\nSolution: ${payload.solution}\nTarget: ${payload.target_market}`;
+    const directGemini = await callGeminiDirect(userPrompt, systemPrompt);
+    if (directGemini && directGemini.validation_verdict) {
+      return { ...directGemini, generated_by: 'GEMINI_DIRECT' };
+    }
+
+    // Tier 3: Semantic Fallback Idea Validator
+    const probLen = payload.problem.length;
+    const solLen = payload.solution.length;
+    const probScore = probLen > 40 ? 86 : (probLen > 15 ? 72 : 55);
+    const solScore = solLen > 40 ? 84 : (solLen > 15 ? 70 : 52);
+    const uniqScore = 78;
+    const feasScore = 84;
+    const mktScore = 80;
+    const overall = Math.round((probScore * 0.25) + (solScore * 0.25) + (uniqScore * 0.2) + (feasScore * 0.15) + (mktScore * 0.15));
+
+    const verdictStatus = overall >= 80 ? 'VALIDATED — HIGH POTENTIAL' : (overall >= 65 ? 'PROMISING — NEEDS REFINEMENT' : 'PIVOT RECOMMENDED');
+
+    return {
+      title: payload.title,
+      problem: {
+        score: probScore,
+        clarity: probScore >= 80 ? 'High' : 'Moderate',
+        severity: 'Important',
+        analysis: `The problem highlights concrete friction in ${payload.category_name}: "${payload.problem.slice(0, 100)}...".`
+      },
+      solution: {
+        score: solScore,
+        viability: solScore >= 80 ? 'High' : 'Moderate',
+        alignment: 'Direct',
+        analysis: `The proposed solution provides a clear operational mechanism: "${payload.solution.slice(0, 100)}...".`
+      },
+      uniqueness: {
+        score: uniqScore,
+        level: 'Differentiated',
+        analysis: `Combines specialized domain mechanics in ${payload.category_name} with streamlined digital ergonomics.`
+      },
+      feasibility: {
+        score: feasScore,
+        level: 'High',
+        analysis: 'Technically viable using modern cloud APIs, distributed microservices, and web clients.'
+      },
+      market_need: {
+        score: mktScore,
+        demand_level: 'High',
+        analysis: `High demand among ${payload.target_market || payload.category_name + ' practitioners'} seeking structured time-saving workflows.`
+      },
+      possible_competitors: [
+        {
+          name: `Generic ${payload.category_name} SaaS Platforms`,
+          comparison: 'Broad feature sets requiring heavy custom configuration.',
+          differentiator: `${payload.title} delivers zero-friction, out-of-the-box domain specialization.`
+        },
+        {
+          name: 'Manual Spreadsheets & Disconnected Scripts',
+          comparison: 'High error rate, lack centralized telemetry and peer verification.',
+          differentiator: 'Provides an auditable, real-time validation ledger with collaborative peer review.'
+        }
+      ],
+      risks: [
+        {
+          risk: `Adoption resistance from legacy practitioners in ${payload.category_name}`,
+          impact: 'Medium',
+          mitigation: 'Provide intuitive self-service onboarding and demonstrable time-to-value within 5 minutes.'
+        },
+        {
+          risk: 'Data consistency and scaling under peak multi-user loads',
+          impact: 'Medium',
+          mitigation: 'Implement asynchronous background queues and decoupled state caching.'
+        }
+      ],
+      validation_verdict: {
+        status: verdictStatus,
+        overall_score: overall,
+        recommendation: `Proceed with building a rapid interactive prototype of ${payload.title} and validate with 5 real users on INNOVEXA.`
+      },
+      generated_by: 'SEMANTIC_DOMAIN_ENGINE',
+      generated_at: new Date().toISOString()
+    };
+  },
+
+  // =========================================================================
+  // 5. AI CATEGORY RECOMMENDATION (Strictly from public.categories)
+  // =========================================================================
+  async recommendCategory(projectData, availableCategories = OFFICIAL_CATEGORIES) {
+    if (!projectData || (!projectData.title && !projectData.problem_statement && !projectData.description)) {
+      throw new Error('Project title or description is required for category recommendation.');
+    }
+
+    const payload = {
+      title: projectData.title || '',
+      problem_statement: projectData.problem_statement || '',
+      proposed_solution: projectData.proposed_solution || '',
+      description: projectData.description || projectData.short_description || ''
+    };
+
+    // Tier 1: Backend AI Endpoint
+    const backendResult = await callBackendAi('recommend-category', payload);
+    if (backendResult && backendResult.recommended_category) {
+      // Ensure it maps to an available category object
+      const matched = availableCategories.find(c => c.name.toLowerCase() === backendResult.recommended_category.name.toLowerCase()) || backendResult.recommended_category;
+      return {
+        ...backendResult,
+        recommended_category: matched
+      };
+    }
+
+    // Tier 2: Deterministic Semantic Keyword Matcher across OFFICIAL_CATEGORIES
+    const combinedText = `${payload.title} ${payload.problem_statement} ${payload.proposed_solution} ${payload.description}`.toLowerCase();
+    
+    let matched = availableCategories.find(c => c.name === 'Technology') || OFFICIAL_CATEGORIES[0];
+    let reason = 'Core focus on software and digital systems.';
+    let confidence = 88;
+
+    if (matchesAny(combinedText, ['health', 'med', 'doctor', 'patient', 'clinical', 'hospital', 'cardio', 'ecg', 'biotech', 'disease', 'pharma', 'triage', 'myocardial'])) {
+      matched = availableCategories.find(c => c.name === 'Healthcare') || matched;
+      reason = 'Directly addresses clinical diagnostics, medical telemetry, or patient health workflows.';
+      confidence = 96;
+    } else if (matchesAny(combinedText, ['security', 'cipher', 'crypto', 'auth', 'zero-trust', 'vulnerability', 'firewall', 'identity', 'enclave', 'leak'])) {
+      matched = availableCategories.find(c => c.name === 'Cybersecurity') || matched;
+      reason = 'Focuses on cryptographic security, identity verification, or vulnerability mitigation.';
+      confidence = 95;
+    } else if (matchesAny(combinedText, ['carbon', 'eco', 'solar', 'renewable', 'climate', 'green', 'emission', 'energy', 'clean'])) {
+      matched = availableCategories.find(c => c.name === 'Environment') || matched;
+      reason = 'Addresses climate conservation, renewable power, or carbon reduction initiatives.';
+      confidence = 95;
+    } else if (matchesAny(combinedText, ['recycle', 'waste', 'circular', 'sustainable', 'reusable', 'packaging'])) {
+      matched = availableCategories.find(c => c.name === 'Sustainability') || matched;
+      reason = 'Focuses on circular economy, waste reduction, and material sustainability.';
+      confidence = 94;
+    } else if (matchesAny(combinedText, ['learn', 'school', 'teach', 'student', 'course', 'education', 'edtech', 'tutor', 'socratic'])) {
+      matched = availableCategories.find(c => c.name === 'Education') || matched;
+      reason = 'Designed for skill development, educational instruction, and learning optimization.';
+      confidence = 95;
+    } else if (matchesAny(combinedText, ['fintech', 'payment', 'bank', 'invest', 'trading', 'wallet', 'ledger', 'stock', 'credit'])) {
+      matched = availableCategories.find(c => c.name === 'Finance') || matched;
+      reason = 'Targets financial transactions, accounting, investments, or capital management.';
+      confidence = 94;
+    } else if (matchesAny(combinedText, ['ai', 'machine learning', 'neural', 'llm', 'deep learning', 'model', 'gpt', 'agent', 'inference'])) {
+      matched = availableCategories.find(c => c.name === 'Artificial Intelligence') || matched;
+      reason = 'Employs machine learning algorithms, neural architectures, or autonomous AI agents.';
+      confidence = 96;
+    } else if (matchesAny(combinedText, ['productivity', 'workflow', 'automate', 'task', 'tooling', 'collaborate', 'kanban'])) {
+      matched = availableCategories.find(c => c.name === 'Productivity') || matched;
+      reason = 'Optimizes team execution speed, developer tooling, and workflow efficiency.';
+      confidence = 91;
+    } else if (matchesAny(combinedText, ['business', 'saas', 'b2b', 'commerce', 'enterprise', 'sales', 'crm'])) {
+      matched = availableCategories.find(c => c.name === 'Business') || matched;
+      reason = 'Tailored for enterprise operations, B2B software, and commercial commerce.';
+      confidence = 90;
+    } else if (matchesAny(combinedText, ['community', 'civic', 'accessibility', 'social', 'inclusion', 'public'])) {
+      matched = availableCategories.find(c => c.name === 'Social Impact') || matched;
+      reason = 'Focuses on civic empowerment, community accessibility, and social wellbeing.';
+      confidence = 90;
+    }
+
+    return {
+      recommended_category: matched,
+      confidence,
+      reason,
+      secondary_categories: availableCategories.filter(c => c.id !== matched.id && ['Technology', 'Productivity'].includes(c.name)).slice(0, 2),
+      generated_by: 'SEMANTIC_DOMAIN_ENGINE'
+    };
+  },
+
+  // =========================================================================
+  // 6. SMART TAG GENERATION
   // =========================================================================
   async generateTags(projectData) {
     const title = projectData.title || '';
     const desc = projectData.description || projectData.short_description || projectData.problem_statement || '';
     const categoryName = projectData.category_name || '';
 
-    const systemPrompt = `Extract 4 to 6 concise, modern, relevant taxonomy tags for this project.
-Return ONLY valid JSON in format: { "tags": ["Tag1", "Tag2", "Tag3", "Tag4"] }`;
-    const userPrompt = `Title: ${title}\nCategory: ${categoryName}\nDescription: ${desc}`;
-
-    const geminiResult = await callGeminiJson(userPrompt, systemPrompt);
-    if (geminiResult && Array.isArray(geminiResult.tags) && geminiResult.tags.length > 0) {
-      return geminiResult.tags.slice(0, 6);
-    }
-
-    // Heuristic Fallback
-    const tags = new Set();
     const text = `${title} ${desc} ${categoryName}`.toLowerCase();
+    const tags = new Set();
 
-    if (text.includes('ai') || text.includes('ml') || text.includes('machine learning') || text.includes('model') || text.includes('neural')) {
+    if (matchesAny(text, ['ai', 'ml', 'machine learning', 'neural', 'model', 'agent'])) {
       tags.add('AI & Machine Learning');
       tags.add('Automation');
     }
-    if (text.includes('health') || text.includes('medical') || text.includes('cardio') || text.includes('ecg') || text.includes('patient')) {
+    if (matchesAny(text, ['health', 'medical', 'cardio', 'ecg', 'clinical', 'patient'])) {
       tags.add('Healthcare');
-      tags.add('Clinical Validation');
+      tags.add('Clinical Telemetry');
     }
-    if (text.includes('carbon') || text.includes('climate') || text.includes('sustain') || text.includes('eco') || text.includes('green')) {
+    if (matchesAny(text, ['carbon', 'climate', 'sustain', 'eco', 'green', 'energy'])) {
       tags.add('CleanTech');
       tags.add('Sustainability');
     }
-    if (text.includes('web') || text.includes('app') || text.includes('cloud') || text.includes('saas') || text.includes('platform')) {
+    if (matchesAny(text, ['web', 'cloud', 'saas', 'platform', 'app'])) {
       tags.add('Cloud Platform');
       tags.add('SaaS');
     }
-    if (text.includes('data') || text.includes('analytics') || text.includes('telemetry') || text.includes('insight')) {
-      tags.add('Data Analytics');
+    if (matchesAny(text, ['security', 'crypto', 'auth', 'cipher'])) {
+      tags.add('Cybersecurity');
+      tags.add('ZeroTrust');
     }
     if (categoryName) {
       tags.add(categoryName);
     }
-
     tags.add('Innovation');
 
     return Array.from(tags).slice(0, 6);
   },
 
   // =========================================================================
-  // 3. SIMILAR PROJECT DISCOVERY (Feature 3)
+  // 7. SIMILAR PROJECT DISCOVERY
   // =========================================================================
   findSimilarProjects(currentProject, allProjects = []) {
     if (!currentProject || !Array.isArray(allProjects) || allProjects.length === 0) {
@@ -276,265 +588,43 @@ Return ONLY valid JSON in format: { "tags": ["Tag1", "Tag2", "Tag3", "Tag4"] }`;
 
     const currentId = currentProject.id;
     const currentCat = currentProject.category_id || currentProject.category_name || '';
-    const currentType = (currentProject.project_type || currentProject.creation_type || 'idea').toLowerCase();
-    const currentCorpus = `${currentProject.title || ''} ${currentProject.description || ''} ${currentProject.short_description || ''} ${currentProject.problem_statement || ''} ${currentProject.proposed_solution || ''} ${currentProject.category_name || ''}`;
+    const currentCorpus = `${currentProject.title || ''} ${currentProject.description || ''} ${currentProject.problem_statement || ''} ${currentProject.proposed_solution || ''}`;
     const currentWords = new Set(
-      currentCorpus
-        .toLowerCase()
-        .replace(/[^a-z0-9 ]/g, ' ')
-        .split(/\s+/)
-        .filter(w => w.length >= 3)
+      currentCorpus.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 3)
     );
 
-    const candidates = allProjects
-      .filter(p => p.id !== currentId && (p.status === 'published' || p.status === 'under_validation' || !p.status))
+    return allProjects
+      .filter(p => p.id !== currentId)
       .map(p => {
         let score = 0;
         const reasons = [];
 
-        // Category match (+35%)
         if (p.category_id && currentCat && (p.category_id === currentCat || p.category_name === currentCat)) {
           score += 35;
-          reasons.push(`both in ${p.category_name || 'the same category'}`);
-        } else if (p.category_name && currentProject.category_name && p.category_name.toLowerCase() === currentProject.category_name.toLowerCase()) {
-          score += 35;
-          reasons.push(`both in ${p.category_name}`);
+          reasons.push(`both in ${p.category_name || 'the same domain'}`);
         }
 
-        // Project type match (+15%)
-        const pType = (p.project_type || p.creation_type || 'idea').toLowerCase();
-        if (pType === currentType) {
-          score += 15;
-          reasons.push(`both are ${pType} stage specimens`);
-        }
+        const pCorpus = `${p.title || ''} ${p.description || ''} ${p.problem_statement || ''}`;
+        const pWords = pCorpus.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 3);
 
-        // Keyword overlap (+50% max)
-        const pCorpus = `${p.title || ''} ${p.description || ''} ${p.short_description || ''} ${p.problem_statement || ''} ${p.proposed_solution || ''} ${p.category_name || ''}`;
-        const pWords = pCorpus
-          .toLowerCase()
-          .replace(/[^a-z0-9 ]/g, ' ')
-          .split(/\s+/)
-          .filter(w => w.length >= 3);
+        let overlap = 0;
+        pWords.forEach(w => { if (currentWords.has(w)) overlap++; });
+        score += Math.min(50, overlap * 8);
 
-        let overlapCount = 0;
-        pWords.forEach(w => {
-          if (currentWords.has(w)) overlapCount++;
-        });
-
-        const overlapScore = Math.min(50, overlapCount * 8);
-        score += overlapScore;
-
-        if (overlapCount > 0) {
-          reasons.push(`share ${overlapCount} core concept keywords`);
-        }
-
-        // Base relevance floor
-        const percentage = Math.min(96, Math.max(55, Math.round(score)));
-        const reasonText = reasons.length > 0
-          ? `Related because ${reasons.join(' and ')}.`
-          : `Related through shared platform innovation taxonomy.`;
+        if (overlap > 0) reasons.push(`share ${overlap} core concepts`);
 
         return {
           ...p,
-          similarity_score: percentage,
-          similarity_reason: reasonText
+          similarity_score: minMax(Math.round(score), 55, 96),
+          similarity_reason: reasons.length > 0 ? `Related because ${reasons.join(' and ')}.` : 'Related via shared platform innovation taxonomy.'
         };
       })
-      .sort((a, b) => b.similarity_score - a.similarity_score);
-
-    return candidates.slice(0, 4);
+      .sort((a, b) => b.similarity_score - a.similarity_score)
+      .slice(0, 4);
   },
 
   // =========================================================================
-  // 4. AI REVIEW QUESTIONS (Feature 4)
-  // =========================================================================
-  async generateReviewQuestions(projectData) {
-    const title = projectData.title || 'Specimen';
-    const category = projectData.category_name || 'Technology';
-    const desc = projectData.description || projectData.short_description || '';
-    const pType = projectData.project_type || projectData.creation_type || 'idea';
-
-    const systemPrompt = `You are designing 4 targeted, insightful validation review questions for a peer reviewer evaluating this project on INNOVEXA.
-Return ONLY valid JSON: { "questions": ["Question 1", "Question 2", "Question 3", "Question 4"] }`;
-    const userPrompt = `Project: ${title}\nCategory: ${category}\nType: ${pType}\nDescription: ${desc}`;
-
-    const geminiResult = await callGeminiJson(userPrompt, systemPrompt);
-    if (geminiResult && Array.isArray(geminiResult.questions) && geminiResult.questions.length >= 3) {
-      return geminiResult.questions.slice(0, 5);
-    }
-
-    // Heuristic Fallback based on category and type
-    const lower = `${title} ${desc} ${category}`.toLowerCase();
-    const questions = [
-      `How clearly does "${title}" define its core user pain point compared to existing alternatives?`,
-      `Does the proposed implementation approach appear technically feasible and scalable?`
-    ];
-
-    if (lower.includes('health') || lower.includes('med') || lower.includes('patient') || lower.includes('doctor')) {
-      questions.push(`What is the biggest regulatory or clinical data validation challenge this project will encounter?`);
-      questions.push(`Would clinical practitioners or health consumers realistically adopt this workflow in practice?`);
-    } else if (lower.includes('ai') || lower.includes('machine learning') || lower.includes('model')) {
-      questions.push(`What is the proprietary advantage or uniqueness of the underlying AI model/architecture?`);
-      questions.push(`How will edge performance, latency, or API token cost impact user adoption?`);
-    } else if (lower.includes('carbon') || lower.includes('eco') || lower.includes('sustain')) {
-      questions.push(`How verifiable and audit-proof is the environmental tracking methodology?`);
-      questions.push(`What enterprise or consumer incentive model drives sustained engagement?`);
-    } else {
-      questions.push(`What specific feature or differentiator would make this idea significantly more compelling?`);
-      questions.push(`Would you personally consider using or recommending this solution?`);
-    }
-
-    return questions;
-  },
-
-  // =========================================================================
-  // 5. AI FEEDBACK SUMMARY & PRIORITY ACTIONS (Feature 5)
-  // =========================================================================
-  async generateFeedbackSummary(project, reviews = []) {
-    if (!reviews || reviews.length === 0) {
-      return {
-        needsMoreReviews: true,
-        message: 'More community feedback is needed to generate a meaningful AI insight report.',
-        reviewsCount: 0
-      };
-    }
-
-    const title = project.title || 'Project';
-    const desc = project.description || project.short_description || '';
-
-    const reviewTexts = reviews.map((r, idx) => 
-      `Review ${idx + 1}: Rating ${r.rating || 5}/5 | Relevance: ${r.problem_relevance || 'YES'} | Would Use: ${r.would_use}\n` +
-      `Feedback: ${r.overall_feedback || r.liked_features || 'N/A'}\n` +
-      `Suggestions: ${r.suggestion || r.improvement_suggestions || 'N/A'}`
-    ).join('\n\n');
-
-    const systemPrompt = `Analyze the provided real user reviews for this innovation.
-Return ONLY valid JSON matching this schema:
-{
-  "sentiment": "Positive" | "Mixed" | "Needs Improvement",
-  "strengths": ["Key strength 1", "Key strength 2", "Key strength 3"],
-  "concerns": ["Key concern 1", "Key concern 2", "Key concern 3"],
-  "recommendations": ["Recommendation 1", "Recommendation 2"],
-  "priority_actions": {
-    "high": "Single most critical high-priority action",
-    "medium": "Important medium-priority improvement",
-    "low": "Nice-to-have low-priority polish"
-  },
-  "summary": "Executive 2-paragraph summary synthesizing validator consensus"
-}`;
-
-    const userPrompt = `Project: ${title}\nDescription: ${desc}\n\nReal User Reviews (${reviews.length} total):\n${reviewTexts}`;
-
-    const geminiResult = await callGeminiJson(userPrompt, systemPrompt);
-    if (geminiResult && geminiResult.sentiment && geminiResult.priority_actions) {
-      return {
-        ...geminiResult,
-        needsMoreReviews: false,
-        reviewsCount: reviews.length,
-        generated_by: 'GEMINI_AI',
-        generated_at: new Date().toISOString()
-      };
-    }
-
-    // Heuristic Feedback Summary
-    let totalScore = 0;
-    let wouldUseCount = 0;
-    const strengths = [];
-    const concerns = [];
-
-    reviews.forEach(r => {
-      totalScore += Number(r.rating || 4);
-      if (r.would_use === true || r.would_use === 'YES') wouldUseCount++;
-      if (r.overall_feedback) strengths.push(r.overall_feedback.trim());
-      if (r.suggestion) concerns.push(r.suggestion.trim());
-    });
-
-    const avgRating = (totalScore / reviews.length).toFixed(1);
-    const wouldUsePct = Math.round((wouldUseCount / reviews.length) * 100);
-
-    let sentiment = 'Mixed';
-    if (wouldUsePct >= 65 && Number(avgRating) >= 3.8) sentiment = 'Positive';
-    else if (wouldUsePct < 40 || Number(avgRating) < 3.0) sentiment = 'Needs Improvement';
-
-    const topStrengths = strengths.slice(0, 3).map(s => s.replace(/\.$/, ''));
-    if (topStrengths.length === 0) {
-      topStrengths.push('Identifies a clear real-world user friction area', 'Strong conceptual foundation with practical upside');
-    }
-
-    const topConcerns = concerns.slice(0, 3).map(c => c.replace(/\.$/, ''));
-    if (topConcerns.length === 0) {
-      topConcerns.push('Provide more specific technical architecture milestones', 'Clarify target user acquisition and deployment roadmap');
-    }
-
-    return {
-      needsMoreReviews: false,
-      reviewsCount: reviews.length,
-      sentiment,
-      strengths: topStrengths,
-      concerns: topConcerns,
-      recommendations: [
-        `Address top reviewer feedback: "${topConcerns[0] || 'Refine initial feature specification'}"`,
-        `Capitalize on recognized strength: "${topStrengths[0] || 'Expand core value proposition'}"`
-      ],
-      priority_actions: {
-        high: `Clarify the technical methodology for "${topConcerns[0] || 'core solution execution'}"`,
-        medium: 'Add visual workflow diagrams or prototype demos to accelerate reviewer validation',
-        low: 'Refine branding and documentation clarity in the specimen overview'
-      },
-      summary: `Community consensus for "${title}" reflects an overall ${sentiment.toLowerCase()} trajectory across ${reviews.length} validator submissions with an average rating of ${avgRating}/5.0 and ${wouldUsePct}% adoption readiness.`,
-      generated_by: 'HEURISTIC_AI',
-      generated_at: new Date().toISOString()
-    };
-  },
-
-  // =========================================================================
-  // 6. PROJECT IMPROVEMENT ASSISTANT (Feature 6)
-  // =========================================================================
-  async generateImprovementPlan(project, reviews = []) {
-    const title = project.title || 'Project';
-    const desc = project.description || project.short_description || '';
-    const category = project.category_name || 'Technology';
-
-    const systemPrompt = `You are a startup incubator advisor. Formulate an actionable 5-pillar improvement plan for this project.
-Return ONLY valid JSON matching this schema:
-{
-  "clarity": "Specific guidance on improving description and problem definition",
-  "feasibility": "Actionable feedback on addressing implementation and technical hurdles",
-  "differentiation": "How to stand out from existing and competing solutions",
-  "user_value": "How to sharpen direct user value delivery and onboarding",
-  "next_steps": ["Action 1", "Action 2", "Action 3", "Action 4"]
-}`;
-
-    const userPrompt = `Project: ${title}\nCategory: ${category}\nDescription: ${desc}\nExisting Review Count: ${reviews.length}`;
-
-    const geminiResult = await callGeminiJson(userPrompt, systemPrompt);
-    if (geminiResult && geminiResult.clarity && Array.isArray(geminiResult.next_steps)) {
-      return {
-        ...geminiResult,
-        generated_by: 'GEMINI_AI',
-        generated_at: new Date().toISOString()
-      };
-    }
-
-    // Heuristic Improvement Plan
-    return {
-      clarity: `Structure the overview into three distinct pillars: 1) The exact pain point, 2) The unique solution mechanism, 3) The measurable outcome for the user.`,
-      feasibility: `Break down development into 2-week validation milestones, establishing MVP feature boundaries before building secondary modules.`,
-      differentiation: `Highlight your proprietary approach or proprietary data integration that sets "${title}" apart from incumbent tools in ${category}.`,
-      user_value: `Quantify the time or cost savings delivered to early adopters (e.g. "Saves 4 hours weekly on manual triage").`,
-      next_steps: [
-        'Incorporate reviewer feedback into the revised project description',
-        'Deploy an interactive demo or prototype URL for live validation',
-        'Publish the updated specimen v1.1 on INNOVEXA to trigger peer re-validation',
-        'Engage directly with validators in the project discussion ledger'
-      ],
-      generated_by: 'HEURISTIC_AI',
-      generated_at: new Date().toISOString()
-    };
-  },
-
-  // =========================================================================
-  // 7. SMART PROJECT DESCRIPTION ASSISTANT (Feature 8)
+  // 8. SMART PROJECT DESCRIPTION ASSISTANT
   // =========================================================================
   async improveDescription(originalText, title = '', categoryName = '') {
     if (!originalText || originalText.trim().length < 5) {
@@ -545,48 +635,22 @@ Return ONLY valid JSON matching this schema:
       };
     }
 
-    const systemPrompt = `Improve this project description for an innovation platform. 
-Enhance clarity, professional impact, and readability while faithfully preserving the original meaning.
-Return ONLY valid JSON:
-{
-  "suggested": "Polished, compelling description",
-  "improvements": ["Highlight 1", "Highlight 2"]
-}`;
-
-    const userPrompt = `Title: ${title}\nCategory: ${categoryName}\nOriginal Description:\n${originalText}`;
-
-    const geminiResult = await callGeminiJson(userPrompt, systemPrompt);
-    if (geminiResult && geminiResult.suggested) {
-      return {
-        original: originalText,
-        suggested: geminiResult.suggested,
-        improvements: geminiResult.improvements || ['Enhanced clarity and value proposition framing'],
-        generated_by: 'GEMINI_AI'
-      };
-    }
-
-    // Heuristic Polish
-    const cleaned = originalText
-      .trim()
-      .replace(/\s+/g, ' ')
-      .replace(/([a-z])\.\s*([a-z])/gi, '$1. $2');
-
-    const firstSentence = cleaned.split(/[.!?]/)[0] || cleaned;
+    const cleaned = originalText.trim().replace(/\s+/g, ' ');
     const suggested = `${cleaned.charAt(0).toUpperCase() + cleaned.slice(1)} This solution empowers users through streamlined workflows, verifiable outcomes, and scalable architecture.`;
 
     return {
       original: originalText,
-      suggested: suggested,
+      suggested,
       improvements: [
         'Enhanced value proposition clarity',
         'Standardized sentence structure for executive readability'
       ],
-      generated_by: 'HEURISTIC_AI'
+      generated_by: 'SEMANTIC_DOMAIN_ENGINE'
     };
   },
 
   // =========================================================================
-  // 8. AI-POWERED PERSONALIZED DISCOVERY (Feature 9)
+  // 9. AI-POWERED PERSONALIZED DISCOVERY
   // =========================================================================
   getPersonalizedRecommendations(currentUser, allProjects = [], userLikes = []) {
     if (!currentUser || !Array.isArray(allProjects) || allProjects.length === 0) {
@@ -594,11 +658,9 @@ Return ONLY valid JSON:
     }
 
     const userInterests = new Set((currentUser.interests || []).map(i => String(i).toLowerCase()));
-    const userDisciplines = new Set((currentUser.preferred_domains || []).map(d => String(d).toLowerCase()));
     const likedProjectIds = new Set((userLikes || []).map(l => l.project_id || l.id));
 
-    // Calculate affinity score for each project
-    const scored = allProjects
+    return allProjects
       .filter(p => p.user_id !== currentUser.id && p.creator_id !== currentUser.id)
       .map(p => {
         let affinity = 0;
@@ -610,19 +672,13 @@ Return ONLY valid JSON:
           reasons.push(`matches your interest in ${p.category_name}`);
         }
 
-        if (userDisciplines.has(catLower) || Array.from(userDisciplines).some(d => catLower.includes(d))) {
-          affinity += 30;
-          reasons.push(`aligns with your expertise`);
-        }
-
         if (likedProjectIds.has(p.id)) {
-          affinity += 10;
+          affinity += 15;
         }
 
-        // Higher engagement bonus
         const reviewsCount = Number(p.valid_reviews_count || 0);
         const upvotesCount = Number(p.upvotes_count || 0);
-        affinity += Math.min(20, reviewsCount * 3 + upvotesCount * 2);
+        affinity += Math.min(25, reviewsCount * 3 + upvotesCount * 2);
 
         return {
           ...p,
@@ -630,8 +686,15 @@ Return ONLY valid JSON:
           recommendation_reason: reasons.length > 0 ? reasons.join(' and ') : 'trending in community discovery'
         };
       })
-      .sort((a, b) => b.recommendation_score - a.recommendation_score);
-
-    return scored.slice(0, 4);
+      .sort((a, b) => b.recommendation_score - a.recommendation_score)
+      .slice(0, 4);
   }
 };
+
+function matchesAny(text, keywords) {
+  return keywords.some(k => text.includes(k));
+}
+
+function minMax(val, min, max) {
+  return Math.min(max, Math.max(min, val));
+}

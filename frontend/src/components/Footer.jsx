@@ -62,9 +62,6 @@ export default function Footer({ setActiveTab }) {
               <button onClick={() => setActiveTab('queue')} className="btn btn-ghost btn-sm" style={{ color: 'var(--text-inverse-muted)', justifyContent: 'flex-start', padding: 0 }}>
                 Review Desk →
               </button>
-              <button onClick={() => setActiveTab('insight')} className="btn btn-ghost btn-sm" style={{ color: 'var(--text-inverse-muted)', justifyContent: 'flex-start', padding: 0 }}>
-                AI Synthesis Reports →
-              </button>
             </div>
           </div>
 

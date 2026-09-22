@@ -1,146 +1,166 @@
 """
-INNOVEXA Pydantic Request & Response Schemas (Blueprint Section 48)
+INNOVEXA Pydantic Request & Response Schemas
+Matches the 15-Table Supabase PostgreSQL Schema Architecture
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 
-# Generic Envelope (Section 48.9)
+# Generic Envelope
 class ApiResponse(BaseModel):
     success: bool = True
     data: Optional[Any] = None
     error: Optional[dict] = None
 
-# User & Auth
-class UserProfile(BaseModel):
+# 1. profiles
+class ProfileSchema(BaseModel):
+    id: str
+    username: Optional[str] = None
+    full_name: str
+    avatar_url: Optional[str] = None
+    headline: Optional[str] = None
+    bio: Optional[str] = None
+    location: Optional[str] = None
+    website: Optional[str] = None
+    github_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    role: str = "I CREATE IDEAS"
+    reputation_points: int = 100
+    projects_count: int = 0
+    reviews_count: int = 0
+    profile_visibility: str = "public"
+    created_at: Optional[datetime] = None
+
+# 2. user_private_data
+class UserPrivateDataSchema(BaseModel):
+    user_id: str
+    phone: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    address: Optional[str] = None
+    preferences: Optional[Dict[str, Any]] = None
+    onboarding_completed: bool = False
+
+# 3. categories
+class CategorySchema(BaseModel):
     id: str
     name: str
-    email: str
-    bio: Optional[str] = None
-    profile_image: Optional[str] = None
-    role: str
-    reputation_score: int
-    interests: List[str] = []
-    expertise: List[dict] = []
-    credits: int = 50
+    slug: str
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    created_at: Optional[datetime] = None
 
-class UserInterestsUpdate(BaseModel):
-    interests: List[str]
-
-class UserExpertiseItem(BaseModel):
-    domain: str
-    expertise_level: str
-
-# Innovation
-# Innovation
-class InnovationCreate(BaseModel):
-    creation_type: str = "IDEA" # IDEA | PRODUCT | STARTUP
-    innovation_type: str = "IDEA"
-    project_stage: str = "idea" # idea | prototype | mvp | beta | live
-    development_stage: str = "CONCEPT"
+# 4. projects (24 columns)
+class ProjectCreate(BaseModel):
+    category_id: str
     title: str
+    slug: Optional[str] = None
     short_description: str
     description: Optional[str] = None
     problem_statement: str
     proposed_solution: str
+    project_type: str = "idea" # idea | product | startup
+    project_stage: str = "idea" # idea | prototype | mvp | beta | live
+    innovation_type: str = "idea"
     target_users: Optional[str] = None
-    category_id: str
-    tags: List[str] = []
     features: List[str] = []
-    technology_stack: Optional[List[str]] = None
-    images: List[str] = []
+    tags: List[str] = []
     cover_image: Optional[str] = None
-    
-    # Optional links
-    website_url: Optional[str] = None
-    demo_url: Optional[str] = None
+    images: List[str] = []
+    launch_url: Optional[str] = None
     github_url: Optional[str] = None
-    app_store_url: Optional[str] = None
-    play_store_url: Optional[str] = None
-    has_live_product: Optional[bool] = False
-    next_community_action: Optional[str] = "follow"
-
-class LaunchUpdate(BaseModel):
-    project_stage: str # idea | prototype | mvp | beta | live
-    website_url: Optional[str] = None
     demo_url: Optional[str] = None
-    github_url: Optional[str] = None
-    app_store_url: Optional[str] = None
-    play_store_url: Optional[str] = None
-    next_community_action: Optional[str] = "follow"
-    launch_status: str = "published" # published | ready_to_launch
+    status: str = "published"
+    is_public: bool = True
 
-class InnovationDetail(BaseModel):
+class ProjectDetail(ProjectCreate):
     id: str
     user_id: str
-    category_id: str
     category_name: Optional[str] = None
-    title: str
-    short_description: str
-    description: Optional[str] = None
-    creation_type: str = "IDEA"
-    innovation_type: str = "IDEA"
-    project_stage: str = "idea"
-    development_stage: str = "CONCEPT"
-    status: str = "UNDER_VALIDATION"
-    launch_status: str = "validating"
-    problem_statement: str
-    proposed_solution: str
-    target_users: Optional[str] = None
-    tags: List[str] = []
-    features: List[str] = []
-    images: List[str] = []
-    cover_image: Optional[str] = None
-    website_url: Optional[str] = None
-    demo_url: Optional[str] = None
-    github_url: Optional[str] = None
-    app_store_url: Optional[str] = None
-    play_store_url: Optional[str] = None
-    has_live_product: Optional[bool] = False
-    next_community_action: Optional[str] = "follow"
-    validation_target: int = 10
-    valid_reviews_count: int = 0
+    view_count: int = 0
     upvotes_count: int = 0
-    version: int = 1
-    published_at: Optional[datetime] = None
+    downvotes_count: int = 0
+    valid_reviews_count: int = 0
     created_at: datetime
+    updated_at: datetime
 
-# Related Feedback (Section 48.3)
-class RelatedFeedbackCreate(BaseModel):
-    related_innovation_id: str
-    is_related: str # YES | NO
-    solves_similar_problem: str # YES | NO
-    is_useful: str # YES | MAYBE | NO
-    would_recommend: str # YES | MAYBE | NO
-    suggestion: Optional[str] = None
+# 5. project_votes
+class ProjectVoteCreate(BaseModel):
+    project_id: str
+    vote_type: str = "upvote" # upvote | downvote
 
-# Reviews (Section 48.5)
+# 6. project_suggestions
+class ProjectSuggestionCreate(BaseModel):
+    project_id: str
+    title: str
+    content: str
+    suggestion_type: str = "general"
+
+# 7. reviews
 class ReviewCreate(BaseModel):
-    problem_relevance: str # YES | NO
-    solution_usefulness: str # YES | MAYBE | NO
-    would_use: str # YES | MAYBE | NO
+    project_id: str
     rating: int = Field(..., ge=1, le=5)
-    liked_text: Optional[str] = None
-    improvement_text: Optional[str] = None
-    feature_request: Optional[str] = None
-    interaction_seconds: int = 0
+    title: str
+    content: str
+    is_public: bool = True
 
 class ReviewResponse(BaseModel):
     id: str
-    innovation_id: str
-    reviewer_id: str
+    project_id: str
+    user_id: str
     rating: int
-    quality_score: int
-    review_status: str # VALID | LOW_QUALITY | FLAGGED_SPAM
+    title: str
+    content: str
+    is_public: bool
     created_at: datetime
 
-# Creator Decision (Section 48.6)
-class CreatorDecision(BaseModel):
-    action: str # IMPROVE | KEEP | RESUBMIT | PUBLISH
-    changelog: Optional[str] = None
-
-# Comments (Section 48.7)
-class CommentCreate(BaseModel):
+# 8. review_suggestions
+class ReviewSuggestionCreate(BaseModel):
+    review_id: str
     content: str
+
+# 9. review_votes
+class ReviewVoteCreate(BaseModel):
+    review_id: str
+    vote_type: str = "helpful" # helpful | not_helpful
+
+# 10. community_posts
+class CommunityPostCreate(BaseModel):
+    category_id: Optional[str] = None
+    title: str
+    content: str
+    image_url: Optional[str] = None
+    tags: List[str] = []
+
+# 11. community_comments
+class CommunityCommentCreate(BaseModel):
+    post_id: str
     parent_comment_id: Optional[str] = None
+    content: str
+
+# 12. community_votes
+class CommunityVoteCreate(BaseModel):
+    post_id: str
+    vote_type: str = "like" # like | dislike
+
+# 13. messages
+class MessageCreate(BaseModel):
+    receiver_id: str
+    content: str
+
+# 14. notifications
+class NotificationResponse(BaseModel):
+    id: str
+    user_id: str
+    actor_id: Optional[str] = None
+    project_id: Optional[str] = None
+    type: str
+    title: str
+    message: Optional[str] = None
+    link: Optional[str] = None
+    is_read: bool
+    created_at: datetime
+
+# 15. project_follows
+class ProjectFollowCreate(BaseModel):
+    project_id: str

@@ -30,9 +30,9 @@ import {
  * 2. COMMUNITY DISCUSSIONS: Live stream of community topics, with direct send & receive capabilities.
  * 3. NOTIFICATIONS: Network feedback alerts and milestone updates.
  */
-export default function MessagesPage({ setActiveTab, setSelectedInnoId, selectedRecipientId, setSelectedRecipientId }) {
+export default function MessagesPage({ setActiveTab, setSelectedInnoId, selectedRecipientId, setSelectedRecipientId, setViewUserId }) {
   const { currentUser, showToast, markNotificationAsRead, markAllNotificationsRead } = useAuth();
-  const [activeTab, setActiveMessagesTab] = useState('MESSAGES'); // 'MESSAGES' | 'COMMUNITY' | 'NOTIFICATIONS'
+  const [activeMessagesTab, setActiveMessagesTab] = useState('MESSAGES'); // 'MESSAGES' | 'COMMUNITY' | 'NOTIFICATIONS'
   const [notifications, setNotifications] = useState([]);
   const [filterType, setFilterType] = useState('ALL');
   const [isLoading, setIsLoading] = useState(true);
@@ -205,11 +205,12 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
     }
   };
 
-  // Load comments for selected community post
+  // Load comments for selected community post using Supabase (not localStorage)
   useEffect(() => {
     if (selectedCommunityPost) {
-      const comms = StorageService.getCommunityComments(selectedCommunityPost.id);
-      setCommunityComments(comms);
+      SupabaseService.getCommunityComments(selectedCommunityPost.id)
+        .then(({ data }) => setCommunityComments(data || []))
+        .catch(() => setCommunityComments([]));
     }
   }, [selectedCommunityPost]);
 
@@ -242,19 +243,20 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
       if (e.detail?.entity === 'community') {
         loadCommunityFeed();
         if (selectedCommunityPost) {
-          const comms = StorageService.getCommunityComments(selectedCommunityPost.id);
-          setCommunityComments(comms);
+          SupabaseService.getCommunityComments(selectedCommunityPost.id)
+            .then(({ data }) => setCommunityComments(data || []))
+            .catch(() => {});
         }
       }
     };
     window.addEventListener('innovexa:datachange', handler);
 
     return () => {
-      unsubNotifs();
-      unsubMsgs();
+      if (typeof unsubNotifs === 'function') unsubNotifs();
+      if (typeof unsubMsgs === 'function') unsubMsgs();
       window.removeEventListener('innovexa:datachange', handler);
     };
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (selectedRecipientId) {
@@ -351,21 +353,42 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
         loadNotifs();
       }
 
-      // If direct message notification, open conversation
-      if ((n.type || '').toUpperCase().includes('MESSAGE')) {
+      const type = (n.type || '').toLowerCase();
+
+      // 1. Direct message notification → open DM thread
+      if (type.includes('message')) {
         setActiveMessagesTab('MESSAGES');
-        const senderId = n.sender_id || n.data?.sender_id;
-        if (senderId) {
-          setActiveThreadId(senderId);
-        }
+        const senderId = n.actor_id || n.sender_id || n.data?.sender_id;
+        if (senderId) setActiveThreadId(senderId);
         return;
       }
 
-      // If target project is linked
-      const targetProjectId = n.project_id || n.innovation_id || n.data?.project_id;
-      if (targetProjectId) {
-        if (setSelectedInnoId) setSelectedInnoId(targetProjectId);
-        setActiveTab('detail');
+      // 2. Community interaction → go to community page
+      if (type === 'community_interaction') {
+        if (setActiveTab) setActiveTab('community');
+        return;
+      }
+
+      // 3. Project-linked notifications → navigate to project detail
+      const targetProjectId = n.related_project_id || n.project_id || n.innovation_id || n.data?.project_id;
+
+      // Handle 'link' field pattern "detail:projectId"
+      let resolvedProjectId = targetProjectId;
+      if (!resolvedProjectId && n.link && n.link.startsWith('detail:')) {
+        resolvedProjectId = n.link.replace('detail:', '');
+      }
+
+      if (resolvedProjectId) {
+        if (setSelectedInnoId) setSelectedInnoId(resolvedProjectId);
+        if (setActiveTab) setActiveTab('detail');
+        return;
+      }
+
+      // 4. Generic link fallback
+      if (n.link && n.link !== '' && !n.link.startsWith('detail:')) {
+        if (n.link === 'community') {
+          if (setActiveTab) setActiveTab('community');
+        }
       }
     } catch (e) {
       console.warn('Error handling notification click:', e);
@@ -423,12 +446,12 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
               padding: '0.45rem 1.1rem',
               borderRadius: 'var(--radius-full)',
               border: 'none',
-              backgroundColor: activeTab === 'MESSAGES' ? 'var(--bg-white)' : 'transparent',
-              color: activeTab === 'MESSAGES' ? 'var(--coral)' : 'var(--text-secondary)',
-              fontWeight: activeTab === 'MESSAGES' ? 700 : 500,
+              backgroundColor: activeMessagesTab === 'MESSAGES' ? 'var(--bg-white)' : 'transparent',
+              color: activeMessagesTab === 'MESSAGES' ? 'var(--coral)' : 'var(--text-secondary)',
+              fontWeight: activeMessagesTab === 'MESSAGES' ? 700 : 500,
               fontSize: '0.84rem',
               cursor: 'pointer',
-              boxShadow: activeTab === 'MESSAGES' ? 'var(--shadow-sm)' : 'none',
+              boxShadow: activeMessagesTab === 'MESSAGES' ? 'var(--shadow-sm)' : 'none',
               display: 'flex',
               alignItems: 'center',
               gap: '0.4rem'
@@ -443,12 +466,12 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
               padding: '0.45rem 1.1rem',
               borderRadius: 'var(--radius-full)',
               border: 'none',
-              backgroundColor: activeTab === 'COMMUNITY' ? 'var(--bg-white)' : 'transparent',
-              color: activeTab === 'COMMUNITY' ? 'var(--teal)' : 'var(--text-secondary)',
-              fontWeight: activeTab === 'COMMUNITY' ? 700 : 500,
+              backgroundColor: activeMessagesTab === 'COMMUNITY' ? 'var(--bg-white)' : 'transparent',
+              color: activeMessagesTab === 'COMMUNITY' ? 'var(--teal)' : 'var(--text-secondary)',
+              fontWeight: activeMessagesTab === 'COMMUNITY' ? 700 : 500,
               fontSize: '0.84rem',
               cursor: 'pointer',
-              boxShadow: activeTab === 'COMMUNITY' ? 'var(--shadow-sm)' : 'none',
+              boxShadow: activeMessagesTab === 'COMMUNITY' ? 'var(--shadow-sm)' : 'none',
               display: 'flex',
               alignItems: 'center',
               gap: '0.4rem'
@@ -463,12 +486,12 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
               padding: '0.45rem 1.1rem',
               borderRadius: 'var(--radius-full)',
               border: 'none',
-              backgroundColor: activeTab === 'NOTIFICATIONS' ? 'var(--bg-white)' : 'transparent',
-              color: activeTab === 'NOTIFICATIONS' ? 'var(--coral)' : 'var(--text-secondary)',
-              fontWeight: activeTab === 'NOTIFICATIONS' ? 700 : 500,
+              backgroundColor: activeMessagesTab === 'NOTIFICATIONS' ? 'var(--bg-white)' : 'transparent',
+              color: activeMessagesTab === 'NOTIFICATIONS' ? 'var(--coral)' : 'var(--text-secondary)',
+              fontWeight: activeMessagesTab === 'NOTIFICATIONS' ? 700 : 500,
               fontSize: '0.84rem',
               cursor: 'pointer',
-              boxShadow: activeTab === 'NOTIFICATIONS' ? 'var(--shadow-sm)' : 'none',
+              boxShadow: activeMessagesTab === 'NOTIFICATIONS' ? 'var(--shadow-sm)' : 'none',
               display: 'flex',
               alignItems: 'center',
               gap: '0.4rem'
@@ -482,7 +505,7 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
       {/* ========================================================================= */}
       {/* 1. DIRECT MESSAGES TAB (SEND & RECEIVE 1-ON-1)                            */}
       {/* ========================================================================= */}
-      {activeTab === 'MESSAGES' && (
+      {activeMessagesTab === 'MESSAGES' && (
         <div className="editorial-card" style={{ padding: '0', overflow: 'hidden', minHeight: '580px', display: 'grid', gridTemplateColumns: 'minmax(260px, 320px) 1fr' }}>
           
           {/* Threads Column */}
@@ -724,7 +747,7 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
       {/* ========================================================================= */}
       {/* 2. COMMUNITY TOPICS TAB (SEND & RECEIVE DISCUSSIONS)                       */}
       {/* ========================================================================= */}
-      {activeTab === 'COMMUNITY' && (
+      {activeMessagesTab === 'COMMUNITY' && (
         <div className="editorial-card" style={{ padding: '0', overflow: 'hidden', minHeight: '580px', display: 'grid', gridTemplateColumns: 'minmax(280px, 360px) 1fr' }}>
           
           {/* Topics List */}
@@ -875,7 +898,7 @@ export default function MessagesPage({ setActiveTab, setSelectedInnoId, selected
       {/* ========================================================================= */}
       {/* 3. NOTIFICATIONS TAB                                                      */}
       {/* ========================================================================= */}
-      {activeTab === 'NOTIFICATIONS' && (
+      {activeMessagesTab === 'NOTIFICATIONS' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
             <div className="filter-chip-group">

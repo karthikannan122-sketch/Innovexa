@@ -82,6 +82,7 @@ export function AuthProvider({ children }) {
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [users, setUsers] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [toasts, setToasts] = useState([]);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
   const [isPersonaModalOpen, setIsPersonaModalOpen] = useState(false);
@@ -94,80 +95,110 @@ export function AuthProvider({ children }) {
   const isSignupInProgressRef = useRef(false);
   const isLoginInProgressRef = useRef(false);
 
-  // Helper: Fetch or verify/create profile row in public.profiles (Requirements 12 & 13)
+  // Helper: Fetch or verify/create profile row in public.profiles and public.user_private_data
   const fetchOrCreateProfile = async (authUser) => {
     if (!authUser || !authUser.id) return null;
 
     try {
-      // 1. Check whether a profile row already exists in Supabase with a 3-second safety timeout
+      // 1. Fetch public profile and private data concurrently with safety timeout
       const profilePromise = supabase
         .from('profiles')
         .select('*')
         .eq('id', authUser.id)
         .maybeSingle();
 
+      const privatePromise = supabase
+        .from('user_private_data')
+        .select('*')
+        .eq('user_id', authUser.id)
+        .maybeSingle();
+
       const timeoutPromise = new Promise((resolve) => 
         setTimeout(() => resolve({ data: null, error: null }), 3000)
       );
 
-      const { data: existingProfile, error: fetchError } = await Promise.race([profilePromise, timeoutPromise]);
+      const [profileResult, privateResult] = await Promise.all([
+        Promise.race([profilePromise, timeoutPromise]),
+        Promise.race([privatePromise, timeoutPromise])
+      ]);
 
-      if (fetchError) {
-        console.warn('[Supabase profiles] Notice while fetching profile:', fetchError.message || fetchError);
-      }
+      let existingProfile = profileResult?.data;
+      let existingPrivate = privateResult?.data;
 
       if (existingProfile) {
-        return existingProfile;
+        return {
+          ...existingProfile,
+          private_data: existingPrivate || null,
+          onboarding_completed: existingPrivate?.onboarding_completed ?? false
+        };
       }
 
-      // 2. Profile does not exist yet; create it for the authenticated Supabase user (including Google OAuth users)
+      // 2. Profile does not exist yet; create it for the authenticated Supabase user
       const meta = authUser.user_metadata || {};
       const fullName = meta.full_name || meta.name || authUser.email?.split('@')[0] || 'Innovator';
+      const username = meta.username || authUser.email?.split('@')[0] || `user_${authUser.id.slice(0, 8)}`;
+      
       const initialProfile = {
         id: authUser.id,
+        username: username,
         full_name: fullName,
         avatar_url: meta.avatar_url || meta.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fullName)}&backgroundColor=20212a,e76f82,7186d8`,
+        headline: meta.headline || '',
         bio: meta.bio || '',
-        organization: meta.organization || '',
-        onboarding_completed: meta.onboarding_completed !== undefined ? Boolean(meta.onboarding_completed) : false,
+        location: meta.location || '',
+        website: meta.website || '',
+        github_url: meta.github_url || '',
+        linkedin_url: meta.linkedin_url || '',
+        role: typeof meta.role === 'string' ? meta.role : (Array.isArray(meta.role) ? meta.role[0] : 'innovator'),
+        reputation_points: 100,
+        projects_count: 0,
+        reviews_count: 0,
+        profile_visibility: 'public',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
 
-      const { data: createdProfile, error: insertError } = await supabase
-        .from('profiles')
-        .insert([initialProfile])
-        .select()
-        .maybeSingle();
+      const initialPrivate = {
+        user_id: authUser.id,
+        phone: meta.phone || null,
+        date_of_birth: meta.date_of_birth || null,
+        address: meta.address || null,
+        preferences: {
+          ...(meta.preferences || {}),
+          onboarding_completed: meta.onboarding_completed !== undefined ? Boolean(meta.onboarding_completed) : false
+        }
+      };
 
-      if (insertError) {
-        console.warn('[Supabase profiles] Notice while creating profile row:', insertError.message || insertError);
-        return initialProfile;
+      try {
+        const { data: createdProfile } = await supabase
+          .from('profiles')
+          .insert([initialProfile])
+          .select()
+          .maybeSingle();
+
+        const { data: createdPrivate } = await supabase
+          .from('user_private_data')
+          .insert([initialPrivate])
+          .select()
+          .maybeSingle();
+
+        return {
+          ...(createdProfile || initialProfile),
+          private_data: createdPrivate || initialPrivate,
+          onboarding_completed: Boolean((createdPrivate || initialPrivate)?.preferences?.onboarding_completed)
+        };
+      } catch (insertErr) {
+        console.warn('[Supabase profiles] Notice while creating profile row:', insertErr);
+        return {
+          ...initialProfile,
+          private_data: initialPrivate,
+          onboarding_completed: Boolean(initialPrivate?.preferences?.onboarding_completed)
+        };
       }
-
-      return createdProfile || initialProfile;
     } catch (err) {
       console.warn('[Supabase profiles] Unexpected exception during profile check:', err);
       return null;
     }
-  };
-
-  // Helper: Load user interests from public.user_interests if table exists
-  const fetchUserInterests = async (userId) => {
-    if (!userId) return [];
-    try {
-      const { data, error } = await supabase
-        .from('user_interests')
-        .select('interest')
-        .eq('user_id', userId);
-
-      if (!error && Array.isArray(data) && data.length > 0) {
-        return data.map(item => item.interest);
-      }
-    } catch (e) {
-      // Table may not exist yet; fallback to profile interests
-    }
-    return null;
   };
 
   // Sync Supabase session & profiles table with application user state
@@ -183,16 +214,17 @@ export function AuthProvider({ children }) {
 
     const sbUser = supabaseSession.user;
     const userProfile = await fetchOrCreateProfile(sbUser);
-    const tableInterests = await fetchUserInterests(sbUser.id);
 
     const meta = sbUser.user_metadata || {};
     const fullName = userProfile?.full_name || meta.full_name || meta.name || sbUser.email?.split('@')[0] || 'Innovator';
     const avatar = userProfile?.avatar_url || meta.avatar_url || meta.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fullName)}&backgroundColor=20212a,e76f82,7186d8`;
-    const onboardingDone = Boolean(userProfile?.onboarding_completed !== undefined ? userProfile.onboarding_completed : meta.onboarding_completed);
+    const onboardingDone = Boolean(userProfile?.onboarding_completed !== undefined ? userProfile.onboarding_completed : (userProfile?.private_data?.onboarding_completed ?? meta.onboarding_completed));
+    const repPoints = userProfile?.reputation_points ?? userProfile?.credits ?? meta.reputation_points ?? 100;
 
     const appUser = {
       id: sbUser.id,
       email: sbUser.email,
+      username: userProfile?.username || meta.username || sbUser.email?.split('@')[0],
       name: fullName,
       full_name: fullName,
       avatar: avatar,
@@ -200,13 +232,21 @@ export function AuthProvider({ children }) {
       bio: userProfile?.bio || meta.bio || '',
       headline: userProfile?.headline || meta.headline || '',
       organization: userProfile?.organization || meta.organization || '',
+      location: userProfile?.location || '',
+      website: userProfile?.website || '',
+      github_url: userProfile?.github_url || '',
+      linkedin_url: userProfile?.linkedin_url || '',
       role: userProfile?.role || meta.role || ['I CREATE IDEAS'],
-      interests: tableInterests || userProfile?.interests || meta.interests || ['AI & MACHINE LEARNING', 'WEB TECHNOLOGY'],
+      interests: userProfile?.interests || meta.interests || ['AI & MACHINE LEARNING', 'WEB TECHNOLOGY'],
       skills: userProfile?.skills || meta.skills || [],
       preferred_domains: userProfile?.preferred_domains || meta.preferred_domains || [],
-      credits: userProfile?.credits !== undefined ? userProfile.credits : (meta.credits ?? 0),
-      reputation_score: userProfile?.reputation_score !== undefined ? userProfile.reputation_score : (meta.reputation_score ?? 0),
-      reputation_tier: userProfile?.reputation_tier || meta.reputation_tier || 'NEW INNOVATOR',
+      credits: repPoints,
+      reputation_score: repPoints,
+      reputation_points: repPoints,
+      reputation_tier: repPoints >= 200 ? 'EXPERT CONTRIBUTOR' : (repPoints >= 100 ? 'TRUSTED REVIEWER' : 'NEW INNOVATOR'),
+      projects_count: userProfile?.projects_count || 0,
+      reviews_count: userProfile?.reviews_count || 0,
+      profile_visibility: userProfile?.profile_visibility || 'public',
       onboarding_completed: onboardingDone,
       created_at: userProfile?.created_at || sbUser.created_at,
       updated_at: userProfile?.updated_at || new Date().toISOString()
@@ -227,6 +267,12 @@ export function AuthProvider({ children }) {
       const notifs = StorageService.getNotificationsForUser(appUser.id);
       setNotifications(notifs || []);
     }
+
+    // Load unread message count
+    try {
+      const cnt = await SupabaseService.getUnreadMessagesCount(appUser.id);
+      setUnreadMessagesCount(cnt || 0);
+    } catch (_) {}
 
     return appUser;
   };
@@ -524,7 +570,13 @@ export function AuthProvider({ children }) {
       : (StorageService.getUserById(targetUserId) || StorageService.getUsers()[0] || {});
 
     const fullName = updates.name !== undefined ? updates.name : (updates.full_name !== undefined ? updates.full_name : (existingUser.name || 'Innovator'));
+    const username = updates.username !== undefined ? updates.username : (existingUser.username || '');
+    const headline = updates.headline !== undefined ? updates.headline : (existingUser.headline || '');
     const bio = updates.bio !== undefined ? updates.bio : (existingUser.bio || '');
+    const location = updates.location !== undefined ? updates.location : (existingUser.location || '');
+    const website = updates.website !== undefined ? updates.website : (existingUser.website || '');
+    const githubUrl = updates.github_url !== undefined ? updates.github_url : (existingUser.github_url || '');
+    const linkedinUrl = updates.linkedin_url !== undefined ? updates.linkedin_url : (existingUser.linkedin_url || '');
     const organization = updates.organization !== undefined ? updates.organization : (existingUser.organization || '');
     const avatar = updates.avatar !== undefined ? updates.avatar : (updates.avatar_url !== undefined ? updates.avatar_url : (existingUser.avatar || ''));
     const onboardingCompleted = updates.onboarding_completed !== undefined ? Boolean(updates.onboarding_completed) : Boolean(existingUser.onboarding_completed);
@@ -536,9 +588,15 @@ export function AuthProvider({ children }) {
     const profileData = {
       full_name: fullName,
       name: fullName,
+      username: username,
       avatar_url: avatar,
       avatar: avatar,
+      headline: headline,
       bio: bio,
+      location: location,
+      website: website,
+      github_url: githubUrl,
+      linkedin_url: linkedinUrl,
       organization: organization,
       onboarding_completed: onboardingCompleted,
       role: role,
@@ -568,10 +626,16 @@ export function AuthProvider({ children }) {
           .from('profiles')
           .update({
             full_name: fullName,
+            username: username || undefined,
             avatar_url: avatar,
+            headline: headline,
             bio: bio,
-            organization: organization,
-            onboarding_completed: onboardingCompleted,
+            location: location,
+            website: website,
+            github_url: githubUrl,
+            linkedin_url: linkedinUrl,
+            role: typeof role === 'string' ? role : (Array.isArray(role) ? role[0] : 'innovator'),
+            profile_visibility: updates.profile_visibility !== undefined ? updates.profile_visibility : (existingUser.profile_visibility || 'public'),
             updated_at: new Date().toISOString()
           })
           .eq('id', targetUserId);
@@ -579,20 +643,23 @@ export function AuthProvider({ children }) {
         console.warn('[Supabase profiles async sync notice]:', err);
       }
 
-      if (interests && Array.isArray(interests)) {
-        try {
-          await supabase.from('user_interests').delete().eq('user_id', targetUserId);
-          if (interests.length > 0) {
-            const interestRows = interests.map(int => ({
-              user_id: targetUserId,
-              interest: int,
-              created_at: new Date().toISOString()
-            }));
-            await supabase.from('user_interests').insert(interestRows);
-          }
-        } catch (interestErr) {
-          // user_interests table optional
-        }
+      try {
+        const currentPrefs = updates.preferences !== undefined ? updates.preferences : (existingUser.preferences || {});
+        await supabase
+          .from('user_private_data')
+          .upsert({
+            user_id: targetUserId,
+            phone: updates.phone !== undefined ? updates.phone : (existingUser.phone || null),
+            date_of_birth: updates.date_of_birth !== undefined ? updates.date_of_birth : (existingUser.date_of_birth || null),
+            address: updates.address !== undefined ? updates.address : (existingUser.address || null),
+            preferences: {
+              ...(typeof currentPrefs === 'object' ? currentPrefs : {}),
+              onboarding_completed: onboardingCompleted
+            },
+            updated_at: new Date().toISOString()
+          });
+      } catch (privateErr) {
+        console.warn('[Supabase user_private_data async sync notice]:', privateErr);
       }
 
       try {
@@ -650,6 +717,21 @@ export function AuthProvider({ children }) {
 
   const unreadNotificationsCount = (notifications || []).filter(n => !n.is_read && !n.read).length;
 
+  // Refresh unread message count whenever a data-change event fires (realtime push)
+  useEffect(() => {
+    if (!currentUser) return;
+    const handler = async (e) => {
+      if (!e.detail?.entity || e.detail.entity === 'messages') {
+        try {
+          const cnt = await SupabaseService.getUnreadMessagesCount(currentUser.id);
+          setUnreadMessagesCount(cnt || 0);
+        } catch (_) {}
+      }
+    };
+    window.addEventListener('innovexa:datachange', handler);
+    return () => window.removeEventListener('innovexa:datachange', handler);
+  }, [currentUser]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -681,6 +763,7 @@ export function AuthProvider({ children }) {
         toggleTheme,
         notifications: notifications || [],
         unreadNotificationsCount,
+        unreadMessagesCount,
         markNotificationAsRead,
         markAllNotificationsRead
       }}
@@ -734,6 +817,7 @@ export function useAuth() {
       toggleTheme: () => {},
       notifications: [],
       unreadNotificationsCount: 0,
+      unreadMessagesCount: 0,
       markNotificationAsRead: () => {},
       markAllNotificationsRead: () => {}
     };

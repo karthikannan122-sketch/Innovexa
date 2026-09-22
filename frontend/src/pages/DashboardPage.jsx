@@ -90,7 +90,9 @@ export default function DashboardPage({ setActiveTab, setSelectedInnoId, setSele
       const userProjects = userRes.data || [];
       setMyProjects(userProjects);
 
-      const userReviews = StorageService.getReviews().filter(r => r.reviewer_id === currentUser.id);
+      // Load user's submitted reviews from Supabase (reviewer_id column)
+      const { data: reviewsData } = await SupabaseService.getUserReviews(currentUser.id);
+      const userReviews = reviewsData || StorageService.getReviews().filter(r => r.reviewer_id === currentUser.id || r.user_id === currentUser.id);
       setMyReviews(userReviews);
 
       const userAssignments = StorageService.getAssignmentsForUser(currentUser.id);

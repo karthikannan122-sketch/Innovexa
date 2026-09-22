@@ -17,7 +17,9 @@ import {
   Bell, 
   Menu, 
   X,
-  ArrowUpRight
+  ArrowUpRight,
+  BrainCircuit,
+  Users
 } from 'lucide-react';
 
 /**
@@ -30,6 +32,7 @@ export default function AppShell({ activeTab, setActiveTab, children }) {
     setIsCommandPaletteOpen,
     notifications = [],
     unreadNotificationsCount = 0,
+    unreadMessagesCount = 0,
     markNotificationAsRead = () => {},
     markAllNotificationsRead = () => {},
     logout = () => {}
@@ -48,11 +51,13 @@ export default function AppShell({ activeTab, setActiveTab, children }) {
   const sidebarNavItems = [
     { key: 'dashboard', label: 'HOME', icon: <Home size={17} /> },
     { key: 'explore', label: 'EXPLORE', icon: <Compass size={17} /> },
+    { key: 'community', label: 'COMMUNITY', icon: <Users size={17} /> },
+    { key: 'messages', label: 'MESSAGES', icon: <MessageSquare size={17} />, badge: unreadMessagesCount },
     { key: 'submit', label: 'CREATE IDEA', icon: <PlusCircle size={17} /> },
+    { key: 'research', label: 'AI RESEARCH', icon: <BrainCircuit size={17} /> },
+    { key: 'insights', label: 'AI INSIGHTS', icon: <Sparkles size={17} /> },
     { key: 'creator', label: 'MY PROJECTS', icon: <FolderKanban size={17} /> },
     { key: 'queue', label: 'REVIEWS', icon: <CheckSquare size={17} />, badge: myAssignments.length },
-    { key: 'insight', label: 'INSIGHTS', icon: <Sparkles size={17} /> },
-    { key: 'messages', label: 'MESSAGES', icon: <MessageSquare size={17} />, badge: unreadNotificationsCount },
     { key: 'profile', label: 'PROFILE', icon: <User size={17} /> },
     { key: 'settings', label: 'SETTINGS', icon: <Settings size={17} /> }
   ];
@@ -101,7 +106,7 @@ export default function AppShell({ activeTab, setActiveTab, children }) {
               </div>
 
               {/* Center Navigation */}
-              <nav style={{ display: 'flex', gap: '2rem', alignItems: 'center' }}>
+              <nav style={{ display: 'flex', gap: '1.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                 <button onClick={() => setActiveTab('explore')} className="btn btn-ghost btn-sm" style={{ fontWeight: 600, letterSpacing: '0.08em' }}>
                   DISCOVER
                 </button>
@@ -111,11 +116,14 @@ export default function AppShell({ activeTab, setActiveTab, children }) {
                 <button onClick={() => setActiveTab('queue')} className="btn btn-ghost btn-sm" style={{ fontWeight: 600, letterSpacing: '0.08em' }}>
                   VALIDATE
                 </button>
-                <button onClick={() => setActiveTab('explore')} className="btn btn-ghost btn-sm" style={{ fontWeight: 600, letterSpacing: '0.08em' }}>
-                  CONNECT
+                <button onClick={() => setActiveTab('research')} className="btn btn-ghost btn-sm" style={{ fontWeight: 600, letterSpacing: '0.08em', color: 'var(--coral)' }}>
+                  AI RESEARCH
                 </button>
-                <button onClick={() => setActiveTab('insight')} className="btn btn-ghost btn-sm" style={{ fontWeight: 600, letterSpacing: '0.08em' }}>
-                  INSIGHTS
+                <button onClick={() => setActiveTab('insights')} className="btn btn-ghost btn-sm" style={{ fontWeight: 600, letterSpacing: '0.08em', color: 'var(--rose-pink)' }}>
+                  AI INSIGHTS
+                </button>
+                <button onClick={() => setActiveTab('community')} className="btn btn-ghost btn-sm" style={{ fontWeight: 600, letterSpacing: '0.08em' }}>
+                  CONNECT
                 </button>
               </nav>
 

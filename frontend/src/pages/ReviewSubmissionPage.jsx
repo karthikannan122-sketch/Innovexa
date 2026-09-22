@@ -32,6 +32,7 @@ export default function ReviewSubmissionPage({ selectedInnoId, selectedAssignmen
     return all.find(i => (i.user_id || i.creator_id) !== currentUser?.id) || all[0] || null;
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
   // AI Review Questions State
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
@@ -165,10 +166,6 @@ export default function ReviewSubmissionPage({ selectedInnoId, selectedAssignmen
   if (wordCount >= 10) { qualityLabel = 'Constructive'; qualityColor = 'var(--periwinkle)'; }
   if (wordCount >= 25) { qualityLabel = 'In-Depth Validator'; qualityColor = 'var(--green)'; }
 
-  const submitReview = async (projectId, rating, content) => {
-    return await SupabaseService.submitReview(projectId, rating, content);
-  };
-
   const handleSubmitReview = async (e) => {
     e.preventDefault();
     const content = (likedText.trim() ? `${likedText.trim()} — ` : '') + whatShouldChange.trim();
@@ -187,13 +184,22 @@ export default function ReviewSubmissionPage({ selectedInnoId, selectedAssignmen
       return;
     }
 
-    if (isSubmitting) return;
-    setIsSubmitting(true);
+    if (isSubmittingReview || isSubmitting) return;
 
     try {
-      await submitReview(innovation.id, Number(rating) || 5, content);
+      setIsSubmittingReview(true);
+      setIsSubmitting(true);
 
-      // Sync Upvote / Like in Supabase project_likes table with By Whom info
+      const title = whatShouldChange.trim().slice(0, 60) || 'Peer Evaluation Critique';
+      await SupabaseService.createReview({
+        projectId: innovation.id,
+        userId: currentUser.id,
+        rating: Number(rating) || 5,
+        title,
+        content
+      });
+
+      // Sync Upvote / Vote in Supabase project_votes table
       if (alsoUpvote || Number(rating) >= 4) {
         try {
           await SupabaseService.voteProject({
@@ -219,9 +225,11 @@ export default function ReviewSubmissionPage({ selectedInnoId, selectedAssignmen
       confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
       showToast('+10 Reputation Points Awarded! Review recorded in database.', 'success');
       window.dispatchEvent(new CustomEvent('innovexa:datachange'));
-    } catch (err) {
-      showToast(err.message || 'Error submitting review.', 'error');
+    } catch (error) {
+      console.error("Review operation failed:", error);
+      showToast(error.message || 'Error submitting review.', 'error');
     } finally {
+      setIsSubmittingReview(false);
       setIsSubmitting(false);
     }
   };
@@ -547,10 +555,11 @@ export default function ReviewSubmissionPage({ selectedInnoId, selectedAssignmen
 
                 <button
                   type="submit"
+                  disabled={isSubmittingReview || isSubmitting}
                   className="btn btn-coral btn-lg"
-                  style={{ width: '100%', gap: '0.5rem' }}
+                  style={{ width: '100%', gap: '0.5rem', opacity: (isSubmittingReview || isSubmitting) ? 0.7 : 1 }}
                 >
-                  SUBMIT VALIDATION FEEDBACK <ArrowUpRight size={17} />
+                  {(isSubmittingReview || isSubmitting) ? "Submitting Review..." : "SUBMIT VALIDATION FEEDBACK"} <ArrowUpRight size={17} />
                 </button>
               </form>
             </div>

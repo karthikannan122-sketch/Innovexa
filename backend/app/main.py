@@ -7,7 +7,8 @@ from fastapi import FastAPI, Depends, HTTPException, status, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 import os
 import uuid
 import json
@@ -21,28 +22,41 @@ except ImportError:
 
 logger = logging.getLogger("innovexa.api")
 
-app = FastAPI(
-    title="INNOVEXA API",
-    description="Production-grade Backend Service for INNOVEXA Innovation Discovery, Validation & Peer Review Engine",
-    version="1.0.0"
-)
+def now_utc_iso() -> str:
+    """Returns ISO 8601 formatted UTC timestamp with trailing Z."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# Autonomous Server-Side 24-Hour Discovery Ingestion Scheduler
-@app.on_event("startup")
-async def start_discovery_scheduler():
-    """Starts the 24-hour server-side discovery worker on application boot."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Autonomous Server-Side 24-Hour Discovery Ingestion Scheduler with clean lifecycle management."""
     async def schedule_worker():
         while True:
             try:
                 logger.info("[Scheduler] Executing scheduled innovation discovery cycle...")
-                # Run ingestion in a thread pool to avoid blocking the event loop
                 await asyncio.to_thread(discovery_engine.run_ingestion_pipeline)
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.error(f"[Scheduler] Ingestion worker error: {e}")
-            # Wait 24 hours (86,400 seconds)
-            await asyncio.sleep(86400)
+            try:
+                await asyncio.sleep(86400)
+            except asyncio.CancelledError:
+                break
 
-    asyncio.create_task(schedule_worker())
+    worker_task = asyncio.create_task(schedule_worker())
+    yield
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(
+    title="INNOVEXA API",
+    description="Production-grade Backend Service for INNOVEXA Innovation Discovery, Validation & Peer Review Engine",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # CORS configuration
 app.add_middleware(
@@ -472,7 +486,7 @@ def signup(req: SignupRequest):
         "reputation_score": 0,
         "reputation_tier": "NEW INNOVATOR",
         "onboarding_completed": False,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": now_utc_iso()
     }
     db_users[user_id] = new_user
     return {"success": True, "data": new_user, "message": "Account created successfully."}
@@ -485,7 +499,9 @@ def login(req: LoginRequest):
         raise HTTPException(status_code=404, detail="No account found with this email.")
     if user.get("password") and user["password"] != req.password:
         raise HTTPException(status_code=401, detail="Invalid password credentials.")
-    return {"success": True, "data": user, "token": user["id"]}
+    data_payload = dict(user)
+    data_payload["token"] = user["id"]
+    return {"success": True, "data": data_payload, "token": user["id"]}
 
 @app.post("/api/v1/auth/logout")
 def logout():
@@ -580,8 +596,8 @@ def create_project(req: ProjectCreateRequest, user_id: str = Depends(get_current
         "creator_id": user_id,
         "creator_name": user.get("name", "Innovator"),
         "creator_avatar": user.get("avatar", ""),
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "created_at": now_utc_iso(),
+        "updated_at": now_utc_iso()
     }
     db_projects[proj_id] = new_project
     
@@ -609,9 +625,9 @@ def update_project(project_id: str, req: ProjectUpdateRequest, user_id: str = De
     if proj.get("user_id") != user_id and proj.get("creator_id") != user_id:
         raise HTTPException(status_code=403, detail="Forbidden: You can only edit your own project.")
 
-    updates = req.dict(exclude_unset=True)
+    updates = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
     proj.update(updates)
-    proj["updated_at"] = datetime.utcnow().isoformat()
+    proj["updated_at"] = now_utc_iso()
     return {"success": True, "data": proj, "message": "Project updated."}
 
 @app.delete("/api/v1/projects/{project_id}")
@@ -638,7 +654,7 @@ def launch_project(project_id: str, website_url: Optional[str] = None, demo_url:
 
     proj["status"] = "PUBLISHED"
     proj["launch_status"] = "published"
-    proj["published_at"] = datetime.utcnow().isoformat()
+    proj["published_at"] = now_utc_iso()
     if website_url: proj["website_url"] = website_url
     if demo_url: proj["demo_url"] = demo_url
     return {"success": True, "data": proj, "message": "Project published live."}
@@ -681,7 +697,7 @@ def submit_review(project_id: str, req: ReviewCreateRequest, user_id: str = Depe
         "rating": req.rating,
         "overall_feedback": req.overall_feedback,
         "suggestion": req.suggestion,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": now_utc_iso()
     }
     db_reviews[rev_id] = new_review
     
@@ -702,7 +718,7 @@ def submit_review(project_id: str, req: ReviewCreateRequest, user_id: str = Depe
             "type": "REVIEW_RECEIVED",
             "message": f"{reviewer.get('name', 'Validator')} published a review on '{proj.get('title')}'.",
             "project_id": project_id,
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": now_utc_iso()
         })
 
     return {"success": True, "data": new_review, "message": "Review submitted successfully."}
@@ -727,7 +743,7 @@ def post_comment(project_id: str, req: CommentCreateRequest, user_id: str = Depe
         "author_name": user.get("name", "Community Member"),
         "author_avatar": user.get("avatar", ""),
         "content": req.content,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": now_utc_iso()
     }
     db_comments[comm_id] = new_comment
     return {"success": True, "data": new_comment}
@@ -783,6 +799,7 @@ def get_dashboard_stats(user_id: str = Depends(get_current_user_id)):
 # 7. AI & STATISTICAL INSIGHTS REPORT
 # -----------------------------------------------------------------------------
 @app.get("/api/v1/insights/{project_id}")
+@app.get("/api/v1/projects/{project_id}/insights")
 def get_insights(project_id: str):
     proj = db_projects.get(project_id)
     if not proj:
@@ -939,7 +956,7 @@ def create_community_post(
 ):
     user = db_users.get(current_user_id, {})
     post_id = f"post_{uuid.uuid4().hex[:8]}"
-    now = datetime.utcnow().isoformat() + "Z"
+    now = now_utc_iso()
 
     new_post = {
         "id": post_id,
@@ -978,7 +995,7 @@ def create_community_comment(
 
     user = db_users.get(current_user_id, {})
     comment_id = f"comm_{uuid.uuid4().hex[:8]}"
-    now = datetime.utcnow().isoformat() + "Z"
+    now = now_utc_iso()
 
     new_comment = {
         "id": comment_id,
@@ -1027,7 +1044,7 @@ def create_community_resource(
 ):
     user = db_users.get(current_user_id, {})
     res_id = f"res_{uuid.uuid4().hex[:8]}"
-    now = datetime.utcnow().isoformat() + "Z"
+    now = now_utc_iso()
 
     new_res = {
         "id": res_id,
@@ -1088,7 +1105,7 @@ def toggle_vote(
             "target_type": req.target_type,
             "target_id": req.target_id,
             "vote_type": req.vote_type,
-            "created_at": datetime.utcnow().isoformat() + "Z"
+            "created_at": now_utc_iso()
         }
         active_vote_type = req.vote_type
 
@@ -1123,203 +1140,987 @@ def health():
     return {"status": "healthy", "service": "INNOVEXA API", "version": "1.0.0"}
 
 # -----------------------------------------------------------------------------
-# 9. SECURE GEMINI AI INSIGHTS ENDPOINT
+# 9. SECURE GEMINI AI INNOVATION FEATURES (PHASE 6)
+# -----------------------------------------------------------------------------
+
+OFFICIAL_CATEGORIES = [
+    {"id": "93fe2938-c843-4fa4-8b01-b07d59990023", "name": "Technology", "slug": "technology"},
+    {"id": "9dbbcd45-778e-411c-92cc-debee85d7137", "name": "Education", "slug": "education"},
+    {"id": "19b552c7-2ed6-44fe-9846-5d1501b1104f", "name": "Healthcare", "slug": "healthcare"},
+    {"id": "e6fa521c-f84c-42f6-9c7d-88447ee259cc", "name": "Business", "slug": "business"},
+    {"id": "913ce065-82bd-4101-a508-22bf41eaf0d5", "name": "Environment", "slug": "environment"},
+    {"id": "3d3d928f-2a11-4639-83d5-865730960135", "name": "Social Impact", "slug": "social-impact"},
+    {"id": "4314f823-fb81-4a31-aec0-5e1d97aaeb9e", "name": "Artificial Intelligence", "slug": "artificial-intelligence"},
+    {"id": "01f81a37-e7f2-4f7d-957e-8e37f1418670", "name": "Cybersecurity", "slug": "cybersecurity"},
+    {"id": "6988000f-f521-4e61-af1c-523263a53ad2", "name": "Sustainability", "slug": "sustainability"},
+    {"id": "7dcfed5c-7406-4d4a-b9ee-d3c09e667ae9", "name": "Finance", "slug": "finance"},
+    {"id": "198af608-fb9b-42c3-a7fa-83ffbd3dd392", "name": "Productivity", "slug": "productivity"},
+    {"id": "a1ed5bda-732a-46db-8e9f-303ca31a8f29", "name": "Other", "slug": "other"}
+]
+
+def _call_gemini_server(prompt: str, system_instruction: str = "") -> Optional[dict]:
+    """Helper to query Gemini REST API with timeout and JSON parsing."""
+    import requests
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+    if not api_key:
+        return None
+
+    full_prompt = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
+    models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    timeout_sec = int(os.environ.get("AI_TIMEOUT_SECONDS", "8"))
+
+    for model in models_to_try:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            payload = {
+                "contents": [{"parts": [{"text": full_prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.2
+                }
+            }
+            resp = requests.post(url, json=payload, timeout=timeout_sec)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                if raw_text:
+                    try:
+                        return json.loads(raw_text)
+                    except Exception:
+                        import re
+                        m = re.search(r'\{[\s\S]*\}', raw_text)
+                        if m:
+                            return json.loads(m.group(0))
+        except Exception as e:
+            logger.warning(f"Gemini call to {model} failed: {e}")
+            continue
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 1. AI PROJECT ANALYSIS (8 Dimensions & Structured Score)
+# -----------------------------------------------------------------------------
+class ProjectAnalysisRequest(BaseModel):
+    project_id: Optional[str] = "proj_specimen"
+    title: str = Field(..., description="Project title")
+    category_name: Optional[str] = "Technology"
+    problem_statement: Optional[str] = ""
+    proposed_solution: Optional[str] = ""
+    target_users: Optional[str] = ""
+    features: Optional[List[str]] = []
+    tags: Optional[List[str]] = []
+    description: Optional[str] = ""
+
+@app.post("/api/v1/ai/analyze-project")
+def analyze_project_endpoint(req: ProjectAnalysisRequest):
+    """
+    1. AI PROJECT ANALYSIS
+    Provides structured 8-dimension evaluation:
+    - Problem quality
+    - Solution quality
+    - Innovation level
+    - Market potential
+    - Technical feasibility
+    - Scalability
+    - Target user clarity
+    - Competitive differentiation
+    - Overall structured score & breakdown
+    """
+    title = req.title.strip() if req.title else "Untitled Innovation"
+    category = req.category_name or "Technology"
+    problem = req.problem_statement or req.description or ""
+    solution = req.proposed_solution or ""
+    target = req.target_users or ""
+    features_list = req.features or []
+
+    system_prompt = """You are a senior venture evaluator and innovation analyst on INNOVEXA.
+Analyze the submitted project across exactly 8 dimensions and return ONLY valid JSON matching this schema:
+{
+  "problem_quality": {
+    "score": number (0-100),
+    "rating": "Exceptional" | "Solid" | "Moderate" | "Needs Refinement",
+    "analysis": "Specific critique of problem definition and friction magnitude"
+  },
+  "solution_quality": {
+    "score": number (0-100),
+    "rating": "Exceptional" | "Solid" | "Moderate" | "Needs Refinement",
+    "analysis": "Specific critique of proposed mechanism and execution viability"
+  },
+  "innovation_level": {
+    "score": number (0-100),
+    "level": "High" | "Moderate" | "Incremental",
+    "analysis": "Uniqueness and technological/workflow novelty"
+  },
+  "market_potential": {
+    "score": number (0-100),
+    "potential": "High" | "Moderate" | "Niche",
+    "analysis": "Commercial and community adoption upside"
+  },
+  "technical_feasibility": {
+    "score": number (0-100),
+    "level": "High" | "Moderate" | "Challenging",
+    "analysis": "Implementation hurdles, architecture, and technology maturity"
+  },
+  "scalability": {
+    "score": number (0-100),
+    "level": "High" | "Moderate" | "Linear",
+    "analysis": "Capacity to scale across users, data, or operational nodes"
+  },
+  "target_user_clarity": {
+    "score": number (0-100),
+    "level": "Clear" | "Moderate" | "Broad",
+    "analysis": "Precision of user persona and market segment definition"
+  },
+  "competitive_differentiation": {
+    "score": number (0-100),
+    "level": "Distinct" | "Moderate" | "Overlapping",
+    "analysis": "Defensibility against incumbent alternatives"
+  },
+  "structured_score": {
+    "overall_score": number (0-100),
+    "grade": "A+" | "A" | "B" | "C",
+    "dimension_scores": {
+      "problem": number (0-100),
+      "solution": number (0-100),
+      "innovation": number (0-100),
+      "market": number (0-100),
+      "feasibility": number (0-100),
+      "scalability": number (0-100),
+      "target_users": number (0-100),
+      "differentiation": number (0-100)
+    },
+    "summary": "Executive 2-sentence synthesis"
+  }
+}
+Do not use generic text. Base your analysis specifically on the project info provided."""
+
+    user_prompt = f"""PROJECT TITLE: {title}
+CATEGORY: {category}
+PROBLEM STATEMENT: {problem or 'Not specified'}
+PROPOSED SOLUTION: {solution or 'Not specified'}
+TARGET USERS: {target or 'Not specified'}
+FEATURES: {', '.join(features_list) if features_list else 'Standard domain workflow'}"""
+
+    ai_result = _call_gemini_server(user_prompt, system_prompt)
+    if ai_result and "structured_score" in ai_result and "problem_quality" in ai_result:
+        ai_result["generated_by"] = "GEMINI_AI"
+        ai_result["project_id"] = req.project_id
+        ai_result["generated_at"] = now_utc_iso()
+        return {"success": True, "data": ai_result}
+
+    # Deterministic Semantic Fallback Engine
+    prob_len = len(problem.strip())
+    sol_len = len(solution.strip())
+    target_len = len(target.strip())
+    feat_count = len(features_list)
+
+    prob_score = min(95, max(50, 60 + (25 if prob_len > 40 else (15 if prob_len > 15 else 0)) + (10 if any(k in problem.lower() for k in ['friction', 'cost', 'time', 'latency', 'manual', 'error', 'lack']) else 0)))
+    sol_score = min(94, max(50, 60 + (20 if sol_len > 40 else (10 if sol_len > 15 else 0)) + (14 if feat_count >= 2 else (8 if feat_count == 1 else 0))))
+    inno_score = min(92, max(55, 65 + (15 if len(title) > 6 else 5) + (12 if sol_len > 30 else 5)))
+    mkt_score = min(90, max(50, 60 + (20 if target_len > 20 else 10) + (10 if category in ["Artificial Intelligence", "Healthcare", "Cybersecurity", "Finance"] else 5)))
+    feas_score = min(96, max(60, 75 + (10 if feat_count >= 1 else 0) + (10 if sol_len > 20 else 0)))
+    scale_score = min(92, max(55, 70 + (10 if category in ["Technology", "Artificial Intelligence", "Productivity"] else 5) + (10 if feat_count >= 2 else 0)))
+    target_score = min(95, max(50, 55 + (30 if target_len > 25 else (15 if target_len > 8 else 0)) + 10))
+    diff_score = min(90, max(50, 62 + (15 if inno_score > 75 else 8) + (13 if prob_score > 75 else 5)))
+
+    overall = round((prob_score * 0.15) + (sol_score * 0.15) + (inno_score * 0.15) + (mkt_score * 0.15) + (feas_score * 0.1) + (scale_score * 0.1) + (target_score * 0.1) + (diff_score * 0.1))
+    grade = "A+" if overall >= 90 else ("A" if overall >= 80 else ("B" if overall >= 70 else "C"))
+
+    fallback_data = {
+        "project_id": req.project_id,
+        "title": title,
+        "problem_quality": {
+            "score": prob_score,
+            "rating": "Exceptional" if prob_score >= 85 else ("Solid" if prob_score >= 70 else "Moderate"),
+            "analysis": f"Addresses verifiable friction in {category}. '{problem[:90]}...' provides identifiable scope boundaries." if problem else f"Problem statement focuses on core {category} workflow bottlenecks."
+        },
+        "solution_quality": {
+            "score": sol_score,
+            "rating": "Exceptional" if sol_score >= 85 else ("Solid" if sol_score >= 70 else "Moderate"),
+            "analysis": f"The proposed solution outlines a clear digital mechanism: '{solution[:90]}...'." if solution else f"Outlines structured implementation leveraging {category} standards."
+        },
+        "innovation_level": {
+            "score": inno_score,
+            "level": "High" if inno_score >= 80 else "Moderate",
+            "analysis": f"Applies specialized ergonomics and architecture to {category} compared to conventional manual methods."
+        },
+        "market_potential": {
+            "score": mkt_score,
+            "potential": "High" if mkt_score >= 80 else "Moderate",
+            "analysis": f"Strong demand within {target or category + ' users'} seeking efficiency gains and structured workflows."
+        },
+        "technical_feasibility": {
+            "score": feas_score,
+            "level": "High" if feas_score >= 80 else "Moderate",
+            "analysis": f"Implementation is technically achievable with modern cloud, web, and API frameworks."
+        },
+        "scalability": {
+            "score": scale_score,
+            "level": "High" if scale_score >= 80 else "Moderate",
+            "analysis": f"Modular design allows horizontal scaling across user nodes and decoupled processing pipelines."
+        },
+        "target_user_clarity": {
+            "score": target_score,
+            "level": "Clear" if target_score >= 80 else "Moderate",
+            "analysis": f"Targets {target or 'domain practitioners and organizations operating in ' + category}."
+        },
+        "competitive_differentiation": {
+            "score": diff_score,
+            "level": "Distinct" if diff_score >= 80 else "Moderate",
+            "analysis": f"Differentiates from incumbent tools through direct domain specialization and streamlined execution."
+        },
+        "structured_score": {
+            "overall_score": overall,
+            "grade": grade,
+            "dimension_scores": {
+                "problem": prob_score,
+                "solution": sol_score,
+                "innovation": inno_score,
+                "market": mkt_score,
+                "feasibility": feas_score,
+                "scalability": scale_score,
+                "target_users": target_score,
+                "differentiation": diff_score
+            },
+            "summary": f"{title} demonstrates strong overall execution readiness ({overall}/100, Grade {grade}) with high problem clarity and defensible domain positioning."
+        },
+        "generated_by": "SEMANTIC_DOMAIN_ENGINE",
+        "generated_at": now_utc_iso()
+    }
+
+    return {"success": True, "data": fallback_data}
+
+
+# -----------------------------------------------------------------------------
+# 2. AI PROJECT IMPROVEMENT (Actionable Suggestions)
+# -----------------------------------------------------------------------------
+class ProjectImprovementRequest(BaseModel):
+    project_id: Optional[str] = "proj_specimen"
+    title: str
+    category_name: Optional[str] = "Technology"
+    problem_statement: Optional[str] = ""
+    proposed_solution: Optional[str] = ""
+    features: Optional[List[str]] = []
+    target_users: Optional[str] = ""
+
+@app.post("/api/v1/ai/improve-project")
+def improve_project_endpoint(req: ProjectImprovementRequest):
+    """
+    2. AI PROJECT IMPROVEMENT
+    Generates actionable suggestions for:
+    - problem refinement
+    - solution improvement
+    - missing features
+    - technical improvements
+    - business improvements
+    """
+    title = req.title.strip() if req.title else "Innovation Specimen"
+    category = req.category_name or "Technology"
+    problem = req.problem_statement or ""
+    solution = req.proposed_solution or ""
+    features_list = req.features or []
+    target = req.target_users or ""
+
+    system_prompt = """You are an innovation accelerator mentor.
+Analyze the provided problem, solution, features, and target users.
+Return ONLY valid JSON matching this schema:
+{
+  "problem_refinement": [
+    "Suggestion 1 to sharpen problem framing and quantify pain",
+    "Suggestion 2 to narrow problem boundary"
+  ],
+  "solution_improvement": [
+    "Suggestion 1 to enhance solution architecture",
+    "Suggestion 2 to improve user adoption experience"
+  ],
+  "missing_features": [
+    "High-value feature 1 that is currently missing",
+    "High-value feature 2 for competitive edge",
+    "High-value feature 3 for telemetry or compliance"
+  ],
+  "technical_improvements": [
+    "Technical architectural upgrade 1 (performance, reliability, or latency)",
+    "Technical architectural upgrade 2 (security, data integrity, or scaling)"
+  ],
+  "business_improvements": [
+    "Business/GTM enhancement 1 (pricing, distribution, or partnership)",
+    "Business/GTM enhancement 2 (community validation or metrics)"
+  ],
+  "actionable_summary": "Executive summary of top 3 highest-leverage improvements"
+}
+Ensure all suggestions specifically reference the project and domain. Do not return generic boilerplate."""
+
+    user_prompt = f"""PROJECT TITLE: {title}
+CATEGORY: {category}
+PROBLEM STATEMENT: {problem or 'Not fully specified'}
+PROPOSED SOLUTION: {solution or 'Not fully specified'}
+FEATURES: {', '.join(features_list) if features_list else 'Core workflow'}
+TARGET USERS: {target or 'Domain practitioners'}"""
+
+    ai_result = _call_gemini_server(user_prompt, system_prompt)
+    if ai_result and "problem_refinement" in ai_result and "missing_features" in ai_result:
+        ai_result["generated_by"] = "GEMINI_AI"
+        ai_result["project_id"] = req.project_id
+        ai_result["generated_at"] = now_utc_iso()
+        return {"success": True, "data": ai_result}
+
+    # Semantic Fallback Suggestions
+    fallback_data = {
+        "project_id": req.project_id,
+        "title": title,
+        "problem_refinement": [
+            f"Quantify the cost or operational latency in {category} (e.g. 'reduces manual turnaround time by 35%').",
+            f"Highlight specific friction triggers experienced by {target or 'primary users'} prior to adoption."
+        ],
+        "solution_improvement": [
+            f"Structure onboarding into zero-configuration templates for {category} workflows.",
+            f"Add clear feedback loops and error recovery mechanisms during core execution."
+        ],
+        "missing_features": [
+            f"Automated audit logging and exportable telemetry reports for {category} compliance.",
+            "Real-time collaboration or multi-stakeholder review capabilities.",
+            "Webhook and REST API integrations for interoperability with third-party domain tooling."
+        ],
+        "technical_improvements": [
+            f"Decouple heavy analytical computation using asynchronous background queues or edge caching.",
+            "Implement end-to-end data encryption at rest and in transit with verifiable cryptographic audit trails."
+        ],
+        "business_improvements": [
+            f"Establish an early validation pilot cohort of 5–10 verified {target or 'domain practitioners'}.",
+            "Define concrete north-star KPIs: active weekly validation cycles and time-to-first-value."
+        ],
+        "actionable_summary": f"To elevate {title}, prioritize quantifying problem friction, attaching an interactive demonstration, and implementing automated audit telemetry for {category}.",
+        "generated_by": "SEMANTIC_DOMAIN_ENGINE",
+        "generated_at": now_utc_iso()
+    }
+
+    return {"success": True, "data": fallback_data}
+
+
+# -----------------------------------------------------------------------------
+# 3. AI PROJECT SUMMARY (Executive & Section Summaries)
+# -----------------------------------------------------------------------------
+class ProjectSummaryRequest(BaseModel):
+    project_id: Optional[str] = "proj_specimen"
+    title: str
+    category_name: Optional[str] = "Technology"
+    problem_statement: Optional[str] = ""
+    proposed_solution: Optional[str] = ""
+    description: Optional[str] = ""
+    target_users: Optional[str] = ""
+    features: Optional[List[str]] = []
+
+@app.post("/api/v1/ai/summarize-project")
+def summarize_project_endpoint(req: ProjectSummaryRequest):
+    """
+    3. AI PROJECT SUMMARY
+    Generates:
+    - short summary
+    - problem summary
+    - solution summary
+    - target users
+    - key features
+    """
+    title = req.title.strip() if req.title else "Untitled Innovation"
+    category = req.category_name or "Technology"
+    problem = req.problem_statement or req.description or ""
+    solution = req.proposed_solution or ""
+    target = req.target_users or ""
+    features_list = req.features or []
+
+    system_prompt = """You are an executive innovation editor on INNOVEXA.
+Generate a concise, crystal-clear structured summary for this project.
+Return ONLY valid JSON matching this schema:
+{
+  "short_summary": "Compelling 1-2 sentence elevator pitch summarizing the core thesis and value proposition",
+  "problem_summary": "Crisp 1-2 sentence articulation of the exact bottleneck being solved",
+  "solution_summary": "Clear 1-2 sentence description of the proprietary mechanism or digital product",
+  "target_users": "Concise summary of the primary beneficiary personas and industry cohorts",
+  "key_features": [
+    "Core feature capability 1",
+    "Core feature capability 2",
+    "Core feature capability 3",
+    "Core feature capability 4"
+  ]
+}
+Ground all text strictly in the provided project data."""
+
+    user_prompt = f"""PROJECT TITLE: {title}
+CATEGORY: {category}
+PROBLEM STATEMENT: {problem or 'Not specified'}
+PROPOSED SOLUTION: {solution or 'Not specified'}
+DESCRIPTION: {req.description or ''}
+TARGET USERS: {target or 'Domain practitioners'}
+FEATURES: {', '.join(features_list) if features_list else 'Standard domain workflow'}"""
+
+    ai_result = _call_gemini_server(user_prompt, system_prompt)
+    if ai_result and "short_summary" in ai_result and "key_features" in ai_result:
+        ai_result["generated_by"] = "GEMINI_AI"
+        ai_result["project_id"] = req.project_id
+        ai_result["generated_at"] = now_utc_iso()
+        return {"success": True, "data": ai_result}
+
+    # Semantic Fallback Summary
+    short_sum = f"{title} is a {category} solution engineered to eliminate {problem[:100] if problem else 'operational bottlenecks'} through {solution[:100] if solution else 'specialized digital automation'}."
+    prob_sum = f"Addresses critical inefficiencies in {category}: {problem[:120] if problem else 'manual overhead and lack of unified automation'}."
+    sol_sum = f"Delivers {solution[:120] if solution else 'a dedicated digital workflow framework tailored for high-throughput reliability'}."
+    target_sum = target or f"Specialists, engineering teams, and organizations operating in {category}."
+    
+    feats = features_list if len(features_list) >= 2 else [
+        f"Domain-tailored workflow automation for {category}",
+        "Real-time telemetry and validation tracking",
+        "Modular architecture with seamless API interoperability",
+        "Encrypted data storage and verifiable audit logging"
+    ]
+
+    fallback_data = {
+        "project_id": req.project_id,
+        "title": title,
+        "short_summary": short_sum,
+        "problem_summary": prob_sum,
+        "solution_summary": sol_sum,
+        "target_users": target_sum,
+        "key_features": feats[:5],
+        "generated_by": "SEMANTIC_DOMAIN_ENGINE",
+        "generated_at": now_utc_iso()
+    }
+
+    return {"success": True, "data": fallback_data}
+
+
+# -----------------------------------------------------------------------------
+# 4. AI IDEA VALIDATION (Interactive Submission Validation)
+# -----------------------------------------------------------------------------
+class IdeaValidationRequest(BaseModel):
+    title: str = Field(..., description="Idea or project title")
+    problem: Optional[str] = None
+    problem_statement: Optional[str] = None
+    solution: Optional[str] = None
+    proposed_solution: Optional[str] = None
+    target_market: Optional[str] = ""
+    target_users: Optional[str] = ""
+    category_name: Optional[str] = "Technology"
+
+@app.post("/api/v1/ai/validate-idea")
+def validate_idea_endpoint(req: IdeaValidationRequest):
+    """
+    4. AI IDEA VALIDATION
+    Analyzes an idea submission across:
+    - problem
+    - solution
+    - uniqueness
+    - feasibility
+    - market need
+    - possible competitors
+    - risks
+    - validation verdict & score
+    """
+    title = req.title.strip() if req.title else "Untitled Idea"
+    problem = (req.problem or req.problem_statement or "").strip()
+    solution = (req.solution or req.proposed_solution or "").strip()
+    target = (req.target_market or req.target_users or "").strip()
+    category = req.category_name or "Technology"
+
+    if not problem and not solution:
+        raise HTTPException(status_code=400, detail="Problem and solution statements are required for validation.")
+
+    system_prompt = """You are a venture partner and lead validation reviewer on INNOVEXA.
+Evaluate the submitted innovation idea with rigorous, constructive analysis.
+Return ONLY valid JSON matching this schema:
+{
+  "problem": {
+    "score": number (0-100),
+    "clarity": "High" | "Moderate" | "Vague",
+    "severity": "Critical" | "Important" | "Minor",
+    "analysis": "Specific evaluation of the problem's urgency and market pain"
+  },
+  "solution": {
+    "score": number (0-100),
+    "viability": "High" | "Moderate" | "Experimental",
+    "alignment": "Direct" | "Partial" | "Unclear",
+    "analysis": "Evaluation of how directly the solution solves the stated problem"
+  },
+  "uniqueness": {
+    "score": number (0-100),
+    "level": "Novel" | "Differentiated" | "Common",
+    "analysis": "Assessment of unique technological, business, or ergonomic edge"
+  },
+  "feasibility": {
+    "score": number (0-100),
+    "level": "High" | "Moderate" | "Complex",
+    "analysis": "Technical, regulatory, and operational implementation feasibility"
+  },
+  "market_need": {
+    "score": number (0-100),
+    "demand_level": "High" | "Moderate" | "Emerging",
+    "analysis": "Market willingness to pay or adopt this solution"
+  },
+  "possible_competitors": [
+    {
+      "name": "Competitor/Alternative 1 (e.g. Existing legacy tools or incumbents)",
+      "comparison": "How they approach the problem",
+      "differentiator": "How this idea can win or stand out"
+    },
+    {
+      "name": "Competitor/Alternative 2",
+      "comparison": "How they approach the problem",
+      "differentiator": "How this idea can win or stand out"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Top primary risk (technical, market, or operational)",
+      "impact": "High" | "Medium" | "Low",
+      "mitigation": "Actionable strategy to overcome this risk"
+    },
+    {
+      "risk": "Secondary risk",
+      "impact": "High" | "Medium" | "Low",
+      "mitigation": "Actionable strategy to overcome this risk"
+    }
+  ],
+  "validation_verdict": {
+    "status": "VALIDATED — HIGH POTENTIAL" | "PROMISING — NEEDS REFINEMENT" | "PIVOT RECOMMENDED",
+    "overall_score": number (0-100),
+    "recommendation": "Decisive next step to advance this idea into a prototype or MVP"
+  }
+}"""
+
+    user_prompt = f"""IDEA TITLE: {title}
+CATEGORY: {category}
+PROBLEM STATEMENT: {problem}
+PROPOSED SOLUTION: {solution}
+TARGET MARKET: {target or 'General domain users'}"""
+
+    ai_result = _call_gemini_server(user_prompt, system_prompt)
+    if ai_result and "validation_verdict" in ai_result and "possible_competitors" in ai_result:
+        ai_result["generated_by"] = "GEMINI_AI"
+        ai_result["generated_at"] = now_utc_iso()
+        return {"success": True, "data": ai_result}
+
+    # Semantic Fallback Idea Validator
+    prob_score = 85 if len(problem) > 40 else (70 if len(problem) > 15 else 55)
+    sol_score = 84 if len(solution) > 40 else (68 if len(solution) > 15 else 50)
+    uniq_score = 78
+    feas_score = 82
+    mkt_score = 80
+    overall = round((prob_score * 0.25) + (sol_score * 0.25) + (uniq_score * 0.2) + (feas_score * 0.15) + (mkt_score * 0.15))
+
+    verdict_status = "VALIDATED — HIGH POTENTIAL" if overall >= 80 else ("PROMISING — NEEDS REFINEMENT" if overall >= 65 else "PIVOT RECOMMENDED")
+
+    fallback_data = {
+        "title": title,
+        "problem": {
+            "score": prob_score,
+            "clarity": "High" if prob_score >= 80 else "Moderate",
+            "severity": "Important",
+            "analysis": f"The problem highlights concrete friction in {category}: '{problem[:100]}...'."
+        },
+        "solution": {
+            "score": sol_score,
+            "viability": "High" if sol_score >= 80 else "Moderate",
+            "alignment": "Direct",
+            "analysis": f"The proposed solution provides a clear operational mechanism: '{solution[:100]}...'."
+        },
+        "uniqueness": {
+            "score": uniq_score,
+            "level": "Differentiated",
+            "analysis": f"Combines domain-specific workflows in {category} with streamlined digital ergonomics."
+        },
+        "feasibility": {
+            "score": feas_score,
+            "level": "High",
+            "analysis": "Technically viable using modern cloud APIs, distributed microservices, and web clients."
+        },
+        "market_need": {
+            "score": mkt_score,
+            "demand_level": "High" if mkt_score >= 80 else "Moderate",
+            "analysis": f"High demand among {target or category + ' professionals'} seeking structured time-saving workflows."
+        },
+        "possible_competitors": [
+            {
+                "name": f"Generic {category} SaaS Platforms",
+                "comparison": "Broad feature sets that require heavy custom configuration.",
+                "differentiator": f"{title} delivers zero-friction, out-of-the-box domain specialization."
+            },
+            {
+                "name": "Manual Spreadsheets & Legacy Scripts",
+                "comparison": "Disconnected, high error rate, and lack centralized telemetry.",
+                "differentiator": "Provides an auditable, real-time validation ledger with collaborative peer review."
+            }
+        ],
+        "risks": [
+            {
+                "risk": f"Adoption resistance from legacy practitioners in {category}",
+                "impact": "Medium",
+                "mitigation": "Provide intuitive self-service onboarding and demonstrable time-to-value within 5 minutes."
+            },
+            {
+                "risk": "Data consistency and scaling under peak multi-user loads",
+                "impact": "Medium",
+                "mitigation": "Implement asynchronous background queues and decoupled state caching."
+            }
+        ],
+        "validation_verdict": {
+            "status": verdict_status,
+            "overall_score": overall,
+            "recommendation": f"Proceed with building a rapid interactive MVP prototype of {title} and validate with 5 real {target or 'users'} on INNOVEXA."
+        },
+        "generated_by": "SEMANTIC_DOMAIN_ENGINE",
+        "generated_at": now_utc_iso()
+    }
+
+    return {"success": True, "data": fallback_data}
+
+
+# -----------------------------------------------------------------------------
+# 5. AI CATEGORY RECOMMENDATION (Strictly from public.categories)
+# -----------------------------------------------------------------------------
+class CategoryRecommendRequest(BaseModel):
+    title: str = Field(..., description="Project title")
+    problem_statement: Optional[str] = ""
+    proposed_solution: Optional[str] = ""
+    description: Optional[str] = ""
+
+@app.post("/api/v1/ai/recommend-category")
+def recommend_category_endpoint(req: CategoryRecommendRequest):
+    """
+    5. AI CATEGORY RECOMMENDATION
+    Suggests the most appropriate category strictly from public.categories.
+    Guaranteed: Will NOT create fake categories.
+    """
+    title = req.title.strip() if req.title else ""
+    problem = req.problem_statement or ""
+    solution = req.proposed_solution or ""
+    desc = req.description or ""
+
+    if not title and not problem and not solution and not desc:
+        raise HTTPException(status_code=400, detail="Project title or description is required for category recommendation.")
+
+    valid_category_names = [c["name"] for c in OFFICIAL_CATEGORIES]
+    
+    system_prompt = f"""You are an innovation taxonomy specialist for the INNOVEXA platform.
+Analyze the project details and recommend the single best category.
+CRITICAL RULE: You MUST choose ONLY from these exact 12 official categories:
+{json.dumps(valid_category_names)}
+
+Return ONLY valid JSON matching this schema:
+{{
+  "recommended_category": "Exact Category Name from the approved list",
+  "confidence": number (0-100),
+  "reason": "Clear explanation why this project belongs in this category",
+  "secondary_categories": [
+    {{
+      "name": "Second Category Name from the approved list",
+      "reason": "Secondary domain overlap explanation"
+    }}
+  ]
+}}
+Do NOT invent or modify category names."""
+
+    user_prompt = f"""PROJECT TITLE: {title}
+PROBLEM STATEMENT: {problem}
+PROPOSED SOLUTION: {solution}
+DESCRIPTION: {desc}"""
+
+    ai_result = _call_gemini_server(user_prompt, system_prompt)
+    if ai_result and "recommended_category" in ai_result:
+        rec_name = ai_result["recommended_category"]
+        matched = next((c for c in OFFICIAL_CATEGORIES if c["name"].lower() == rec_name.lower() or rec_name.lower() in c["name"].lower()), None)
+        if matched:
+            return {
+                "success": True,
+                "data": {
+                    "recommended_category": matched,
+                    "confidence": ai_result.get("confidence", 92),
+                    "reason": ai_result.get("reason", f"Aligned with {matched['name']} taxonomy."),
+                    "secondary_categories": [
+                        next((c for c in OFFICIAL_CATEGORIES if c["name"].lower() == sc.get("name", "").lower()), OFFICIAL_CATEGORIES[0])
+                        for sc in ai_result.get("secondary_categories", [])
+                    ][:2],
+                    "generated_by": "GEMINI_AI"
+                }
+            }
+
+    # Deterministic Semantic Keyword Matcher across OFFICIAL_CATEGORIES
+    combined_text = f"{title} {problem} {solution} {desc}".lower()
+    
+    matched = OFFICIAL_CATEGORIES[0] # Technology default
+    reason = "Core focus on software and digital systems."
+    confidence = 88
+
+    if any(w in combined_text for w in ["health", "med", "doctor", "patient", "clinical", "hospital", "cardio", "ecg", "biotech", "disease", "pharma", "triage", "myocardial"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Healthcare")
+        reason = "Directly addresses clinical diagnostics, medical telemetry, or patient health workflows."
+        confidence = 96
+    elif any(w in combined_text for w in ["security", "cipher", "crypto", "auth", "zero-trust", "vulnerability", "firewall", "identity", "enclave", "leak"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Cybersecurity")
+        reason = "Focuses on cryptographic security, identity verification, or vulnerability mitigation."
+        confidence = 95
+    elif any(w in combined_text for w in ["carbon", "eco", "solar", "renewable", "climate", "green", "emission", "energy", "clean"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Environment")
+        reason = "Addresses climate conservation, renewable power, or carbon reduction initiatives."
+        confidence = 95
+    elif any(w in combined_text for w in ["recycle", "waste", "circular", "sustainable", "reusable", "packaging"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Sustainability")
+        reason = "Focuses on circular economy, waste reduction, and material sustainability."
+        confidence = 94
+    elif any(w in combined_text for w in ["ai", "machine learning", "reinforcement learning", "neural", "llm", "deep learning", "model", "gpt", "agent", "inference"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Artificial Intelligence")
+        reason = "Employs machine learning algorithms, neural architectures, or autonomous AI agents."
+        confidence = 96
+    elif any(w in combined_text for w in ["school", "teach", "student", "course", "education", "edtech", "tutor", "socratic", "curriculum"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Education")
+        reason = "Designed for skill development, educational instruction, and learning optimization."
+        confidence = 95
+    elif any(w in combined_text for w in ["fintech", "payment", "bank", "invest", "trading", "wallet", "ledger", "stock", "credit"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Finance")
+        reason = "Targets financial transactions, accounting, investments, or capital management."
+        confidence = 94
+    elif any(w in combined_text for w in ["productivity", "workflow", "automate", "task", "tooling", "collaborate", "kanban"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Productivity")
+        reason = "Optimizes team execution speed, developer tooling, and workflow efficiency."
+        confidence = 91
+    elif any(w in combined_text for w in ["business", "saas", "b2b", "commerce", "enterprise", "sales", "crm"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Business")
+        reason = "Tailored for enterprise operations, B2B software, and commercial commerce."
+        confidence = 90
+    elif any(w in combined_text for w in ["community", "civic", "accessibility", "social", "inclusion", "public"]):
+        matched = next(c for c in OFFICIAL_CATEGORIES if c["name"] == "Social Impact")
+        reason = "Focuses on civic empowerment, community accessibility, and social wellbeing."
+        confidence = 90
+
+    return {
+        "success": True,
+        "data": {
+            "recommended_category": matched,
+            "confidence": confidence,
+            "reason": reason,
+            "secondary_categories": [
+                c for c in OFFICIAL_CATEGORIES if c["id"] != matched["id"] and c["name"] in ["Technology", "Productivity"]
+            ][:2],
+            "generated_by": "SEMANTIC_DOMAIN_ENGINE"
+        }
+    }
+
+
+# -----------------------------------------------------------------------------
+# 6. ENHANCED AI INSIGHTS ENDPOINT (Full 10 Components)
 # -----------------------------------------------------------------------------
 class ProjectInsightRequest(BaseModel):
-    project_id: str
-    project_title: str
-    category_name: Optional[str] = "General Technology"
+    project_id: Optional[str] = "proj_specimen"
+    project_title: Optional[str] = None
+    title: Optional[str] = None
+    category_name: Optional[str] = "Technology"
     problem_statement: Optional[str] = ""
     description: Optional[str] = ""
     target_users: Optional[str] = ""
     proposed_solution: Optional[str] = ""
     technologies: Optional[List[str]] = []
     tags: Optional[List[str]] = []
+    features: Optional[List[str]] = []
     website_url: Optional[str] = None
     reviews_count: Optional[int] = 0
     reviews_summary: Optional[str] = ""
     upvotes_count: Optional[int] = 0
 
 @app.post("/api/v1/ai/generate-insights")
+@app.post("/api/v1/ai/insights")
 def generate_project_insights_endpoint(req: ProjectInsightRequest):
     """
-    Secure Server-Side AI Insights Generator.
-    Executes Google Gemini 2.0 Flash with server-side GEMINI_API_KEY.
+    6. AI INSIGHTS PAGE BACKEND
+    Returns comprehensive 10-point analytics report:
+    - project overview
+    - AI analysis
+    - strengths
+    - weaknesses
+    - opportunities
+    - risks
+    - recommended improvements (prioritized)
+    - innovation score
+    - feasibility score
+    - market potential
     """
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
-    
-    prompt = f"""You are an AI Innovation Analyst for the INNOVEXA platform.
-Analyze the following specific innovation project.
-Do not provide generic advice.
-Base your analysis only on the project information provided.
+    title = (req.project_title or req.title or "Untitled Innovation").strip()
+    category = req.category_name or "Technology"
+    problem = req.problem_statement or req.description or ""
+    solution = req.proposed_solution or ""
+    target = req.target_users or ""
+    techs = req.technologies or []
 
-PROJECT TITLE:
-{req.project_title}
-
-CATEGORY:
-{req.category_name}
-
-PROBLEM STATEMENT:
-{req.problem_statement or 'Early-stage hypothesis in ' + req.category_name}
-
-DESCRIPTION:
-{req.description or 'Innovative project in ' + req.category_name}
-
-TARGET USERS:
-{req.target_users or 'Domain practitioners and users in ' + req.category_name}
-
-PROPOSED SOLUTION:
-{req.proposed_solution or 'Structured solution framework targeting core workflow bottlenecks.'}
-
-TECHNOLOGIES:
-{', '.join(req.technologies) if req.technologies else 'Modern web, cloud and domain-specific APIs'}
-
-TAGS:
-{', '.join(req.tags) if req.tags else req.category_name}
-
-COMMUNITY REVIEWS COUNT:
-{req.reviews_count}
-
-COMMUNITY SIGNALS & FEEDBACK HIGHLIGHTS:
-{req.reviews_summary or 'No community reviews submitted yet.'}
-
-Analyze this project and provide a strictly valid JSON object matching this schema:
+    system_prompt = f"""You are an AI Innovation Analyst for the INNOVEXA platform.
+Analyze the provided innovation project and return ONLY valid JSON matching this schema:
 {{
   "project_id": "{req.project_id}",
-  "project_title": "{req.project_title}",
-  "project_summary": "Executive summary specifically referencing this project (2-3 sentences)",
-  "problem_analysis": {{
-    "clarity_score": 85,
-    "analysis": "Specific analysis of this project's stated problem"
+  "project_title": "{title}",
+  "project_overview": {{
+    "title": "{title}",
+    "category": "{category}",
+    "summary": "Executive summary (2-3 sentences) specifically referencing this project"
   }},
-  "innovation": {{
-    "score": 80,
-    "analysis": "Specific analysis of this project's proposed solution and novelty"
+  "ai_analysis": {{
+    "problem_analysis": "Deep evaluation of the stated problem friction",
+    "solution_analysis": "Critique of the proposed mechanism and digital architecture",
+    "value_proposition": "Core value delivered to early adopters and users"
   }},
-  "target_users": "Specific user personas and market segments for this project",
   "strengths": [
     "Specific strength referencing this project's unique mechanics",
     "Second specific strength",
     "Third specific strength"
   ],
   "weaknesses": [
-    "Specific risk, vulnerability or missing detail for this project",
+    "Specific vulnerability, risk, or missing detail",
     "Second specific challenge"
   ],
-  "technical_feasibility": {{
-    "score": 82,
-    "analysis": "Feasibility analysis referencing the tech stack and implementation hurdles"
-  }},
-  "scalability": {{
-    "score": 78,
-    "analysis": "Scalability and data throughput analysis"
-  }},
-  "competition_considerations": "How this project compares against existing market solutions and alternatives",
-  "improvement_opportunities": [
-    "Specific actionable recommendation referencing this project",
-    "Second specific opportunity",
-    "Third specific opportunity"
+  "opportunities": [
+    "Strategic market expansion or workflow integration opportunity 1",
+    "Opportunity 2"
   ],
-  "recommended_next_steps": [
-    "Immediate technical step 1",
-    "Validation step 2",
-    "Deployment step 3"
+  "risks": [
+    "Operational, technological, or adoption risk 1",
+    "Risk 2"
   ],
-  "overall_score": 84,
-  "confidence": 88,
-  "community_signals": {{
-    "reviews_count": {req.reviews_count},
-    "average_rating": 4.5,
-    "consensus_summary": "Community consensus or initial stage awaiting reviews"
-  }}
+  "recommended_improvements": [
+    {{
+      "title": "Actionable improvement milestone 1",
+      "description": "Concrete steps to execute",
+      "priority": "HIGH"
+    }},
+    {{
+      "title": "Actionable improvement milestone 2",
+      "description": "Concrete steps to execute",
+      "priority": "MEDIUM"
+    }},
+    {{
+      "title": "Actionable improvement milestone 3",
+      "description": "Concrete steps to execute",
+      "priority": "LOW"
+    }}
+  ],
+  "innovation_score": {{
+    "score": number (0-100),
+    "level": "High" | "Moderate" | "Emerging",
+    "breakdown": {{
+      "uniqueness": number (0-25),
+      "problem_clarity": number (0-25),
+      "solution_fit": number (0-25),
+      "execution_readiness": number (0-25)
+    }}
+  }},
+  "feasibility_score": {{
+    "score": number (0-100),
+    "level": "High" | "Moderate" | "Challenging",
+    "explanation": "Technical and operational implementation analysis"
+  }},
+  "market_potential": {{
+    "score": number (0-100),
+    "potential": "High" | "Moderate" | "Niche",
+    "explanation": "Market upside and audience adoption trajectory"
+  }},
+  "overall_score": number (0-100),
+  "confidence": 90
 }}
+Do not return generic boilerplate. Base your evaluation strictly on the submitted project details."""
 
-CRITICAL:
-Each analysis MUST specifically reference the submitted project ({req.project_title}).
-Do not repeat generic boilerplate.
-Return only valid JSON."""
+    user_prompt = f"""PROJECT TITLE: {title}
+CATEGORY: {category}
+PROBLEM STATEMENT: {problem or 'Early-stage hypothesis'}
+DESCRIPTION: {req.description or ''}
+PROPOSED SOLUTION: {solution or 'Direct domain execution'}
+TARGET USERS: {target or 'Domain practitioners'}
+TECHNOLOGIES/FEATURES: {', '.join(techs) if techs else 'Standard domain workflow'}
+COMMUNITY REVIEWS COUNT: {req.reviews_count}
+REVIEWS HIGHLIGHTS: {req.reviews_summary or 'No community reviews submitted yet.'}"""
 
-    if api_key:
-        import requests
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "responseMimeType": "application/json",
-                    "temperature": 0.2
-                }
-            }
-            resp = requests.post(url, json=payload, timeout=12)
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                if raw_text:
-                    parsed = json.loads(raw_text)
-                    parsed["model_used"] = "gemini-2.0-flash"
-                    parsed["generated_at"] = datetime.utcnow().isoformat() + "Z"
-                    return {"success": True, "data": parsed}
-        except Exception as e:
-            logger.warning(f"Live Gemini API call failed: {e}")
+    ai_result = _call_gemini_server(user_prompt, system_prompt)
+    if ai_result and "innovation_score" in ai_result and "feasibility_score" in ai_result:
+        ai_result["generated_by"] = "GEMINI_AI"
+        ai_result["project_id"] = req.project_id
+        ai_result["generated_at"] = now_utc_iso()
+        return {"success": True, "data": ai_result}
 
-    # Fallback: Dynamic Semantic Domain Analyzer (Never generic boilerplate)
-    domain_terms = [t for t in (req.problem_statement + " " + req.description + " " + req.proposed_solution).split() if len(t) > 4][:8]
-    core_keyword_str = ", ".join(domain_terms[:4]) if domain_terms else req.category_name
-
-    clarity_score = 90 if len(req.problem_statement or "") > 50 else (75 if len(req.problem_statement or "") > 20 else 60)
-    readiness_score = min(96, max(45, 50 + (10 if req.problem_statement else 0) + (10 if req.proposed_solution else 0) + (10 if req.target_users else 0) + (10 if req.technologies else 0) + (5 if req.website_url else 0)))
+    # Semantic Fallback Insights
+    prob_len = len(problem.strip())
+    sol_len = len(solution.strip())
+    
+    inno_val = min(96, max(60, 65 + (15 if prob_len > 30 else 5) + (15 if sol_len > 30 else 5)))
+    feas_val = min(95, max(65, 75 + (10 if len(techs) > 0 else 0) + (10 if sol_len > 20 else 0)))
+    mkt_val = min(92, max(60, 70 + (15 if len(target) > 15 else 5) + (8 if category in ["Artificial Intelligence", "Healthcare", "Cybersecurity", "Finance"] else 4)))
+    overall_val = round((inno_val * 0.4) + (feas_val * 0.3) + (mkt_val * 0.3))
 
     fallback_data = {
         "project_id": req.project_id,
-        "project_title": req.project_title,
-        "project_summary": f"{req.project_title} is an innovation in {req.category_name} focused on addressing {req.problem_statement[:140] if req.problem_statement else 'core workflow frictions'}. The proposed solution targets {req.target_users or 'domain practitioners'} using specialized architectures.",
-        "problem_analysis": {
-            "clarity_score": clarity_score,
-            "analysis": f"The problem addresses critical friction in {req.category_name}: '{req.problem_statement or req.description or 'Domain optimization'}'. The focus on {core_keyword_str} provides clear scope boundaries."
+        "project_title": title,
+        "project_overview": {
+            "title": title,
+            "category": category,
+            "summary": f"{title} is a dedicated {category} innovation addressing {problem[:120] if problem else 'workflow friction'} through {solution[:120] if solution else 'specialized digital architecture'}."
         },
-        "innovation": {
-            "score": readiness_score,
-            "analysis": f"Novel approach applying {req.proposed_solution[:120] if req.proposed_solution else 'domain-tailored mechanisms'} to overcome conventional barriers in {req.category_name}."
+        "ai_analysis": {
+            "problem_analysis": f"Addresses verifiable friction in {category}: '{problem[:140] if problem else 'Domain workflow overhead'}'. Provides clear scope boundaries.",
+            "solution_analysis": f"Applies domain-tailored mechanics: '{solution[:140] if solution else 'Structured digital execution'}'.",
+            "value_proposition": f"Empowers {target or 'domain practitioners'} to eliminate manual bottlenecks and accelerate execution speed."
         },
-        "target_users": req.target_users or f"Practitioners, teams, and early adopters operating within {req.category_name}.",
         "strengths": [
-            f"Explicit focus on solving {req.problem_statement[:60] if req.problem_statement else req.category_name + ' workflow overhead'}.",
-            f"Tailored solution design leveraging {', '.join(req.technologies[:2]) if req.technologies else 'modern computational tools'}.",
-            f"Clearly identified user cohort ({req.target_users or 'target domain specialists'})."
+            f"Focused problem-solution alignment in {category}.",
+            f"Directly addresses workflow hurdles experienced by {target or 'target practitioners'}.",
+            f"Modular implementation path utilizing {', '.join(techs[:2]) if techs else 'standard modern frameworks'}."
         ],
         "weaknesses": [
-            f"Edge case handling under high throughput or non-standard {req.category_name} inputs.",
-            "Quantified benchmark metrics comparing performance against baseline legacy tooling."
+            "Quantified benchmark metrics comparing performance against baseline legacy tools.",
+            f"Edge case handling under non-standard {category} input formats."
         ],
-        "technical_feasibility": {
-            "score": 82,
-            "analysis": f"The architectural stack utilizing {', '.join(req.technologies) if req.technologies else 'standard modern frameworks'} is technically sound with manageable implementation complexity."
-        },
-        "scalability": {
-            "score": 80,
-            "analysis": f"Horizontal scaling path is viable by containerizing processing pipelines and decoupling {req.category_name} state storage."
-        },
-        "competition_considerations": f"Existing solutions in {req.category_name} often suffer from high configuration latency; {req.project_title} differentiates through focused ergonomics and streamlined execution.",
-        "improvement_opportunities": [
-            f"Incorporate real-time telemetry logging to demonstrate quantifiable reductions in {core_keyword_str} friction.",
-            f"Publish an interactive prototype demonstration targeting {req.target_users or 'early adopters'}.",
-            "Define explicit integration protocols (REST/WebSocket/SDK) for third-party domain tooling."
+        "opportunities": [
+            f"Expand integrations with third-party {category} APIs and developer ecosystems.",
+            "Offer self-service interactive sandboxes to accelerate peer validation and creator reputation."
         ],
-        "recommended_next_steps": [
-            f"Deploy alpha proof-of-concept for {req.project_title} and validate with 5 real {req.target_users or 'users'}.",
-            "Instrument latency and error telemetry across core workflows.",
-            "Publish structured validation questionnaire on INNOVEXA to collect peer reviews."
+        "risks": [
+            "User workflow inertia when transitioning from incumbent legacy tooling.",
+            "Latency and throughput bottlenecks during peak multi-node operations."
         ],
-        "overall_score": readiness_score,
-        "confidence": 85,
-        "community_signals": {
-            "reviews_count": req.reviews_count,
-            "average_rating": 4.5 if req.reviews_count > 0 else 0.0,
-            "consensus_summary": f"{req.reviews_count} peer evaluations recorded on the INNOVEXA ledger." if req.reviews_count > 0 else "Early-stage project awaiting community reviews."
+        "recommended_improvements": [
+            {
+                "title": "Deploy Interactive Prototype URL",
+                "description": "Attach a live sandbox demonstration to accelerate validator scoring on INNOVEXA.",
+                "priority": "HIGH"
+            },
+            {
+                "title": "Quantify Pain Point Benchmarks",
+                "description": "Measure and publish specific time/cost reductions (e.g. 'saves 4 hrs/week').",
+                "priority": "MEDIUM"
+            },
+            {
+                "title": "Instrument Telemetry & Logging",
+                "description": "Record latency, error rates, and user engagement metrics for validation audit trails.",
+                "priority": "LOW"
+            }
+        ],
+        "innovation_score": {
+            "score": inno_val,
+            "level": "High" if inno_val >= 80 else "Moderate",
+            "breakdown": {
+                "uniqueness": 22,
+                "problem_clarity": 23,
+                "solution_fit": 22,
+                "execution_readiness": 21
+            }
         },
-        "model_used": "semantic-domain-analyzer",
-        "generated_at": datetime.utcnow().isoformat() + "Z"
+        "feasibility_score": {
+            "score": feas_val,
+            "level": "High" if feas_val >= 80 else "Moderate",
+            "explanation": f"The technical architecture leveraging modern web and API protocols is feasible with manageable engineering complexity."
+        },
+        "market_potential": {
+            "score": mkt_val,
+            "potential": "High" if mkt_val >= 80 else "Moderate",
+            "explanation": f"Strong adoption potential among {target or 'practitioners in ' + category} seeking modern workflow tooling."
+        },
+        "overall_score": overall_val,
+        "confidence": 88,
+        "generated_by": "SEMANTIC_DOMAIN_ENGINE",
+        "generated_at": now_utc_iso()
     }
 
     return {"success": True, "data": fallback_data}
+
 

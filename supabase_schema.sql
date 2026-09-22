@@ -1,19 +1,23 @@
 -- ============================================================================
--- INNOVEXA SUPABASE POSTGRESQL SCHEMA & ROW LEVEL SECURITY (RLS) POLICIES
+-- INNOVEXA SUPABASE POSTGRESQL MASTER SCHEMA & SECURITY (15 TABLES)
 -- ============================================================================
--- Run this SQL in your Supabase SQL Editor to provision all tables, 
--- constraints, foreign keys, RLS security rules, and real-time triggers.
+-- Run this in your Supabase SQL Editor to provision all tables, constraints,
+-- foreign keys, RLS security policies, real-time triggers, and seed categories.
+-- ============================================================================
 
--- Enable UUID Extension
+-- 1. Enable Required Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================================
--- 1. PROFILES TABLE (Linked with Supabase auth.users)
+-- 1. PROFILES TABLE (Linked with auth.users)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
+    full_name TEXT NOT NULL DEFAULT 'Innovator',
+    name TEXT,
+    email TEXT,
+    avatar_url TEXT DEFAULT '',
     avatar TEXT,
     bio TEXT DEFAULT '',
     headline TEXT DEFAULT '',
@@ -21,6 +25,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     role TEXT[] DEFAULT ARRAY['I CREATE IDEAS'],
     interests TEXT[] DEFAULT ARRAY['AI & MACHINE LEARNING'],
     skills TEXT[] DEFAULT ARRAY[]::TEXT[],
+    preferred_domains TEXT[] DEFAULT ARRAY[]::TEXT[],
     credits INTEGER DEFAULT 100,
     reputation_score INTEGER DEFAULT 100,
     reputation_tier TEXT DEFAULT 'NEW INNOVATOR',
@@ -29,10 +34,10 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Enable RLS for profiles
+CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles(email);
+
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
--- Profiles Policies
 DROP POLICY IF EXISTS "Public profiles are viewable by everyone" ON public.profiles;
 CREATE POLICY "Public profiles are viewable by everyone" 
 ON public.profiles FOR SELECT 
@@ -48,15 +53,116 @@ CREATE POLICY "Users can update their own profile"
 ON public.profiles FOR UPDATE 
 USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can delete their own profile" ON public.profiles;
+CREATE POLICY "Users can delete their own profile" 
+ON public.profiles FOR DELETE 
+USING (auth.uid() = id);
+
 -- ============================================================================
--- 2. CATEGORIES TABLE
+-- 2. USER PRIVATE DATA TABLE (Sensitive Settings & Preferences)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.user_private_data (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT,
+    phone TEXT DEFAULT '',
+    notification_preferences JSONB DEFAULT '{"email": true, "push": true, "in_app": true}'::jsonb,
+    settings JSONB DEFAULT '{"theme": "dark", "auto_save": true}'::jsonb,
+    api_keys JSONB DEFAULT '{}'::jsonb,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.user_private_data ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can only select their own private data" ON public.user_private_data;
+CREATE POLICY "Users can only select their own private data"
+ON public.user_private_data FOR SELECT
+USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can only insert their own private data" ON public.user_private_data;
+CREATE POLICY "Users can only insert their own private data"
+ON public.user_private_data FOR INSERT
+WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can only update their own private data" ON public.user_private_data;
+CREATE POLICY "Users can only update their own private data"
+ON public.user_private_data FOR UPDATE
+USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can only delete their own private data" ON public.user_private_data;
+CREATE POLICY "Users can only delete their own private data"
+ON public.user_private_data FOR DELETE
+USING (auth.uid() = user_id);
+
+-- Trigger to auto-create profile and user_private_data on signup
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_full_name TEXT;
+    v_avatar_url TEXT;
+BEGIN
+    v_full_name := COALESCE(
+        NEW.raw_user_meta_data->>'full_name',
+        NEW.raw_user_meta_data->>'name',
+        split_part(NEW.email, '@', 1),
+        'Innovator'
+    );
+    v_avatar_url := COALESCE(
+        NEW.raw_user_meta_data->>'avatar_url',
+        NEW.raw_user_meta_data->>'avatar',
+        'https://api.dicebear.com/7.x/initials/svg?seed=' || encode(v_full_name::bytea, 'escape')
+    );
+
+    -- Insert into public.profiles
+    INSERT INTO public.profiles (id, full_name, name, email, avatar_url, avatar, onboarding_completed, created_at, updated_at)
+    VALUES (
+        NEW.id,
+        v_full_name,
+        v_full_name,
+        NEW.email,
+        v_avatar_url,
+        v_avatar_url,
+        false,
+        NOW(),
+        NOW()
+    )
+    ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        full_name = COALESCE(public.profiles.full_name, EXCLUDED.full_name),
+        avatar_url = COALESCE(public.profiles.avatar_url, EXCLUDED.avatar_url),
+        updated_at = NOW();
+
+    -- Insert into public.user_private_data
+    INSERT INTO public.user_private_data (user_id, email, created_at, updated_at)
+    VALUES (
+        NEW.id,
+        NEW.email,
+        NOW(),
+        NOW()
+    )
+    ON CONFLICT (user_id) DO UPDATE SET
+        email = EXCLUDED.email,
+        updated_at = NOW();
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+AFTER INSERT ON auth.users
+FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+-- ============================================================================
+-- 3. CATEGORIES TABLE
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.categories (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    color TEXT DEFAULT '#E76F82',
-    icon TEXT,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL UNIQUE,
+    slug TEXT NOT NULL UNIQUE,
+    description TEXT DEFAULT '',
+    icon TEXT DEFAULT 'Sparkles',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -67,113 +173,250 @@ CREATE POLICY "Categories are readable by everyone"
 ON public.categories FOR SELECT 
 USING (true);
 
--- Seed Categories
-INSERT INTO public.categories (id, name, description, color, icon) VALUES
-('cat_ai', 'AI & Machine Learning', 'Neural networks, autonomous agents, computer vision, and foundation models.', '#7186D8', 'Cpu'),
-('cat_health', 'Healthcare & Biotech', 'Clinical diagnostics, medical hardware, longevity, and telemetry therapeutics.', '#E76F82', 'HeartPulse'),
-('cat_web', 'Web Technology', 'Distributed systems, browsers, high-performance UI frameworks, and protocols.', '#58B8AD', 'Globe'),
-('cat_design', 'Design & Creative Tools', 'Generative media, UX engines, 3D design platforms, and vector suites.', '#69B89A', 'Palette'),
-('cat_productivity', 'Productivity & Work', 'Workflow automation, knowledge graphs, and distributed collaboration.', '#9B8AE5', 'Sparkles'),
-('cat_security', 'Cybersecurity', 'Zero-knowledge proofs, privacy protocols, and automated threat defense.', '#E9B45B', 'ShieldCheck')
-ON CONFLICT (id) DO NOTHING;
+DROP POLICY IF EXISTS "Authenticated users can insert categories" ON public.categories;
+CREATE POLICY "Authenticated users can insert categories" 
+ON public.categories FOR INSERT 
+WITH CHECK (auth.role() = 'authenticated');
+
+-- Seed the 12 Official Categories
+INSERT INTO public.categories (id, name, slug, description, icon) VALUES
+('93fe2938-c843-4fa4-8b01-b07d59990023', 'Technology', 'technology', 'Technology, software, cloud and hardware innovations', 'Cpu'),
+('9dbbcd45-778e-411c-92cc-debee85d7137', 'Education', 'education', 'EdTech, learning platforms, and skill development solutions', 'GraduationCap'),
+('19b552c7-2ed6-44fe-9846-5d1501b1104f', 'Healthcare', 'healthcare', 'Digital health, medical devices, wellness, and biotech', 'HeartPulse'),
+('e6fa521c-f84c-42f6-9c7d-88447ee259cc', 'Business', 'business', 'Enterprise tools, B2B SaaS, operations, and commerce', 'Briefcase'),
+('913ce065-82bd-4101-a508-22bf41eaf0d5', 'Environment', 'environment', 'Clean tech, conservation, renewable energy, and climate solutions', 'Leaf'),
+('3d3d928f-2a11-4639-83d5-865730960135', 'Social Impact', 'social-impact', 'Civic tech, accessibility, and community impact initiatives', 'Users'),
+('4314f823-fb81-4a31-aec0-5e1d97aaeb9e', 'Artificial Intelligence', 'artificial-intelligence', 'Generative AI, neural models, robotics, and agentic systems', 'BrainCircuit'),
+('01f81a37-e7f2-4f7d-957e-8e37f1418670', 'Cybersecurity', 'cybersecurity', 'Security, zero-trust, identity, cryptography, and privacy', 'ShieldCheck'),
+('6988000f-f521-4e61-af1c-523263a53ad2', 'Sustainability', 'sustainability', 'Circular economy, waste reduction, and sustainable living', 'Recycle'),
+('7dcfed5c-7406-4d4a-b9ee-d3c09e667ae9', 'Finance', 'finance', 'FinTech, decentralized finance, investing, and accounting', 'Coins'),
+('198af608-fb9b-42c3-a7fa-83ffbd3dd392', 'Productivity', 'productivity', 'Workflow automation, developer tooling, and collaboration', 'Zap'),
+('a1ed5bda-732a-46db-8e9f-303ca31a8f29', 'Other', 'other', 'Cross-domain and emerging creative innovations', 'Sparkles')
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  slug = EXCLUDED.slug,
+  description = EXCLUDED.description,
+  icon = EXCLUDED.icon;
 
 -- ============================================================================
--- 3. PROJECTS / INNOVATIONS TABLE
+-- 4. PROJECTS TABLE (Innovations & Ideas)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.projects (
-    id TEXT PRIMARY KEY DEFAULT ('inno_' || replace(uuid_generate_v4()::text, '-', '')),
+    id TEXT PRIMARY KEY DEFAULT ('inno_' || replace(gen_random_uuid()::text, '-', '')),
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    category_id TEXT REFERENCES public.categories(id),
-    category_name TEXT NOT NULL,
+    category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
+    category_name TEXT NOT NULL DEFAULT 'Technology',
     title TEXT NOT NULL,
-    short_description TEXT NOT NULL,
-    description TEXT,
-    project_type TEXT DEFAULT 'IDEA', -- 'IDEA' | 'PRODUCT' | 'STARTUP'
-    creation_type TEXT DEFAULT 'IDEA', -- 'IDEA' | 'PRODUCT' | 'STARTUP'
+    short_description TEXT NOT NULL DEFAULT '',
+    description TEXT DEFAULT '',
+    project_type TEXT DEFAULT 'IDEA',          -- 'IDEA' | 'PRODUCT' | 'STARTUP'
+    creation_type TEXT DEFAULT 'IDEA',
     innovation_type TEXT DEFAULT 'IDEA',
-    project_stage TEXT DEFAULT 'idea', -- 'idea' | 'prototype' | 'mvp' | 'beta' | 'live'
+    project_stage TEXT DEFAULT 'idea',          -- 'idea' | 'prototype' | 'mvp' | 'beta' | 'live'
     development_stage TEXT DEFAULT 'CONCEPT',
-    status TEXT DEFAULT 'UNDER_VALIDATION', -- 'DRAFT' | 'UNDER_VALIDATION' | 'VALIDATION_COMPLETE' | 'PUBLISHED'
-    launch_status TEXT DEFAULT 'validating', -- 'draft' | 'validating' | 'improving' | 'ready_to_launch' | 'published'
-    problem_statement TEXT NOT NULL,
-    proposed_solution TEXT NOT NULL,
-    target_users TEXT,
+    status TEXT DEFAULT 'UNDER_VALIDATION',     -- 'DRAFT' | 'UNDER_VALIDATION' | 'VALIDATION_COMPLETE' | 'PUBLISHED'
+    launch_status TEXT DEFAULT 'validating',
+    problem_statement TEXT NOT NULL DEFAULT '',
+    proposed_solution TEXT NOT NULL DEFAULT '',
+    target_users TEXT DEFAULT '',
     features TEXT[] DEFAULT ARRAY[]::TEXT[],
     tags TEXT[] DEFAULT ARRAY[]::TEXT[],
     images TEXT[] DEFAULT ARRAY[]::TEXT[],
-    cover_image TEXT,
+    cover_image TEXT DEFAULT '',
     
     -- Launch & Destination URLs
-    launch_url TEXT,
-    website_url TEXT,
-    demo_url TEXT,
-    github_url TEXT,
-    app_store_url TEXT,
-    play_store_url TEXT,
+    launch_url TEXT DEFAULT '',
+    website_url TEXT DEFAULT '',
+    demo_url TEXT DEFAULT '',
+    github_url TEXT DEFAULT '',
+    app_store_url TEXT DEFAULT '',
+    play_store_url TEXT DEFAULT '',
     has_live_product BOOLEAN DEFAULT FALSE,
     next_community_action TEXT DEFAULT 'follow',
     
+    -- Metrics & Telemetry
     validation_target INTEGER DEFAULT 10,
     valid_reviews_count INTEGER DEFAULT 0,
     upvotes_count INTEGER DEFAULT 0,
+    downvotes_count INTEGER DEFAULT 0,
     comments_count INTEGER DEFAULT 0,
     version INTEGER DEFAULT 1,
-    published_at TIMESTAMPTZ,
+    published_at TIMESTAMPTZ DEFAULT NOW(),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Index for fast lookup & filtering
 CREATE INDEX IF NOT EXISTS idx_projects_user_id ON public.projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_projects_category_id ON public.projects(category_id);
 CREATE INDEX IF NOT EXISTS idx_projects_status ON public.projects(status);
+CREATE INDEX IF NOT EXISTS idx_projects_created_at ON public.projects(created_at);
 
--- Enable RLS for projects
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Public projects are viewable by everyone" ON public.projects;
 CREATE POLICY "Public projects are viewable by everyone" 
 ON public.projects FOR SELECT 
-USING (status != 'DRAFT' OR auth.uid() = user_id);
+USING (true);
 
 DROP POLICY IF EXISTS "Users can insert their own projects" ON public.projects;
 CREATE POLICY "Users can insert their own projects" 
 ON public.projects FOR INSERT 
 WITH CHECK (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can only update their own projects" ON public.projects;
-CREATE POLICY "Users can only update their own projects" 
+DROP POLICY IF EXISTS "Users can update their own projects" ON public.projects;
+CREATE POLICY "Users can update their own projects" 
 ON public.projects FOR UPDATE 
 USING (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can only delete their own projects" ON public.projects;
-CREATE POLICY "Users can only delete their own projects" 
+DROP POLICY IF EXISTS "Users can delete their own projects" ON public.projects;
+CREATE POLICY "Users can delete their own projects" 
 ON public.projects FOR DELETE 
 USING (auth.uid() = user_id);
 
 -- ============================================================================
--- 4. REVIEWS TABLE (8 Core Fields + Constraints)
+-- 5. PROJECT_VOTES TABLE (Unified Upvotes & Downvotes for Projects)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.project_votes (
+    id BIGSERIAL PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    vote_type TEXT NOT NULL CHECK (vote_type IN ('upvote', 'downvote')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT unique_user_project_vote UNIQUE (project_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_votes_project_id ON public.project_votes(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_votes_user_id ON public.project_votes(user_id);
+
+ALTER TABLE public.project_votes ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Project votes are viewable by everyone" ON public.project_votes;
+CREATE POLICY "Project votes are viewable by everyone" 
+ON public.project_votes FOR SELECT 
+USING (true);
+
+DROP POLICY IF EXISTS "Users can vote on projects" ON public.project_votes;
+CREATE POLICY "Users can vote on projects" 
+ON public.project_votes FOR INSERT 
+WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can change their project vote" ON public.project_votes;
+CREATE POLICY "Users can change their project vote" 
+ON public.project_votes FOR UPDATE 
+USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete their project vote" ON public.project_votes;
+CREATE POLICY "Users can delete their project vote" 
+ON public.project_votes FOR DELETE 
+USING (auth.uid() = user_id);
+
+-- Trigger: Automatically maintain projects upvotes_count and downvotes_count
+CREATE OR REPLACE FUNCTION public.handle_project_vote_sync()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.vote_type = 'upvote' THEN
+            UPDATE public.projects SET upvotes_count = COALESCE(upvotes_count, 0) + 1, updated_at = NOW() WHERE id = NEW.project_id;
+        ELSIF NEW.vote_type = 'downvote' THEN
+            UPDATE public.projects SET downvotes_count = COALESCE(downvotes_count, 0) + 1, updated_at = NOW() WHERE id = NEW.project_id;
+        END IF;
+        RETURN NEW;
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF OLD.vote_type != NEW.vote_type THEN
+            IF OLD.vote_type = 'upvote' THEN
+                UPDATE public.projects SET upvotes_count = GREATEST(0, COALESCE(upvotes_count, 1) - 1) WHERE id = OLD.project_id;
+            ELSIF OLD.vote_type = 'downvote' THEN
+                UPDATE public.projects SET downvotes_count = GREATEST(0, COALESCE(downvotes_count, 1) - 1) WHERE id = OLD.project_id;
+            END IF;
+            
+            IF NEW.vote_type = 'upvote' THEN
+                UPDATE public.projects SET upvotes_count = COALESCE(upvotes_count, 0) + 1, updated_at = NOW() WHERE id = NEW.project_id;
+            ELSIF NEW.vote_type = 'downvote' THEN
+                UPDATE public.projects SET downvotes_count = COALESCE(downvotes_count, 0) + 1, updated_at = NOW() WHERE id = NEW.project_id;
+            END IF;
+        END IF;
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        IF OLD.vote_type = 'upvote' THEN
+            UPDATE public.projects SET upvotes_count = GREATEST(0, COALESCE(upvotes_count, 1) - 1), updated_at = NOW() WHERE id = OLD.project_id;
+        ELSIF OLD.vote_type = 'downvote' THEN
+            UPDATE public.projects SET downvotes_count = GREATEST(0, COALESCE(downvotes_count, 1) - 1), updated_at = NOW() WHERE id = OLD.project_id;
+        END IF;
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_project_vote_sync ON public.project_votes;
+CREATE TRIGGER on_project_vote_sync
+AFTER INSERT OR UPDATE OR DELETE ON public.project_votes
+FOR EACH ROW EXECUTE FUNCTION public.handle_project_vote_sync();
+
+-- ============================================================================
+-- 6. PROJECT_SUGGESTIONS TABLE (Peer Feedback & Suggestions on Projects)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.project_suggestions (
+    id TEXT PRIMARY KEY DEFAULT ('sug_' || replace(gen_random_uuid()::text, '-', '')),
+    project_id TEXT NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    title TEXT DEFAULT '',
+    content TEXT NOT NULL,
+    status TEXT DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'rejected', 'implemented')),
+    upvotes_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_suggestions_project_id ON public.project_suggestions(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_suggestions_user_id ON public.project_suggestions(user_id);
+
+ALTER TABLE public.project_suggestions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Project suggestions are viewable by everyone" ON public.project_suggestions;
+CREATE POLICY "Project suggestions are viewable by everyone" 
+ON public.project_suggestions FOR SELECT 
+USING (true);
+
+DROP POLICY IF EXISTS "Users can submit project suggestions" ON public.project_suggestions;
+CREATE POLICY "Users can submit project suggestions" 
+ON public.project_suggestions FOR INSERT 
+WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users and project owners can update suggestions" ON public.project_suggestions;
+CREATE POLICY "Users and project owners can update suggestions" 
+ON public.project_suggestions FOR UPDATE 
+USING (auth.uid() = user_id OR auth.uid() IN (SELECT user_id FROM public.projects WHERE id = project_id));
+
+DROP POLICY IF EXISTS "Users can delete their own suggestions" ON public.project_suggestions;
+CREATE POLICY "Users can delete their own suggestions" 
+ON public.project_suggestions FOR DELETE 
+USING (auth.uid() = user_id);
+
+-- ============================================================================
+-- 7. REVIEWS TABLE (Peer Validation Reviews)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.reviews (
-    id TEXT PRIMARY KEY DEFAULT ('rev_' || replace(uuid_generate_v4()::text, '-', '')),
+    id TEXT PRIMARY KEY DEFAULT ('rev_' || replace(gen_random_uuid()::text, '-', '')),
     project_id TEXT NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
     reviewer_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    relevance_answer TEXT,           -- 'YES' | 'NO' | 'MAYBE'
-    problem_relevance TEXT NOT NULL, -- 'YES' | 'MAYBE' | 'NOT YET'
-    would_use TEXT NOT NULL,         -- 'YES' | 'NO'
+    problem_relevance TEXT NOT NULL DEFAULT 'YES', -- 'YES' | 'MAYBE' | 'NOT YET'
+    relevance_answer TEXT DEFAULT 'YES',
+    would_use TEXT NOT NULL DEFAULT 'YES',         -- 'YES' | 'NO'
     rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
     overall_feedback TEXT NOT NULL,
-    suggestion TEXT NOT NULL,
+    suggestion TEXT DEFAULT '',
+    upvotes_count INTEGER DEFAULT 0,
+    downvotes_count INTEGER DEFAULT 0,
+    is_valid BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-
-    -- Constraints: Prevent duplicate review per user-project, prevent self-review
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT unique_reviewer_project UNIQUE (project_id, reviewer_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_reviews_project_id ON public.reviews(project_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_reviewer_id ON public.reviews(reviewer_id);
 
--- Enable RLS for reviews
 ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Reviews are viewable by everyone" ON public.reviews;
@@ -181,32 +424,35 @@ CREATE POLICY "Reviews are viewable by everyone"
 ON public.reviews FOR SELECT 
 USING (true);
 
-DROP POLICY IF EXISTS "Users can insert reviews (excluding their own projects)" ON public.reviews;
-CREATE POLICY "Users can insert reviews (excluding their own projects)" 
+DROP POLICY IF EXISTS "Users can submit reviews" ON public.reviews;
+CREATE POLICY "Users can submit reviews" 
 ON public.reviews FOR INSERT 
-WITH CHECK (
-    auth.uid() = reviewer_id AND 
-    auth.uid() != (SELECT user_id FROM public.projects WHERE id = project_id)
-);
+WITH CHECK (auth.uid() = reviewer_id);
 
-DROP POLICY IF EXISTS "Users can update their own review" ON public.reviews;
-CREATE POLICY "Users can update their own review" 
+DROP POLICY IF EXISTS "Users can update their reviews" ON public.reviews;
+CREATE POLICY "Users can update their reviews" 
 ON public.reviews FOR UPDATE 
 USING (auth.uid() = reviewer_id);
 
--- Trigger: Automatically increment project review count on review insert
+DROP POLICY IF EXISTS "Users can delete their reviews" ON public.reviews;
+CREATE POLICY "Users can delete their reviews" 
+ON public.reviews FOR DELETE 
+USING (auth.uid() = reviewer_id);
+
+-- Trigger: Automatically increment project review count & reward reviewer
 CREATE OR REPLACE FUNCTION public.handle_new_review()
 RETURNS TRIGGER AS $$
 BEGIN
     UPDATE public.projects
-    SET valid_reviews_count = valid_reviews_count + 1,
+    SET valid_reviews_count = COALESCE(valid_reviews_count, 0) + 1,
         updated_at = NOW()
     WHERE id = NEW.project_id;
     
-    -- Award +10 points to reviewer
+    -- Award +10 credits and reputation to reviewer
     UPDATE public.profiles
-    SET credits = credits + 10,
-        reputation_score = reputation_score + 10
+    SET credits = COALESCE(credits, 0) + 10,
+        reputation_score = COALESCE(reputation_score, 0) + 10,
+        updated_at = NOW()
     WHERE id = NEW.reviewer_id;
     
     RETURN NEW;
@@ -219,319 +465,119 @@ AFTER INSERT ON public.reviews
 FOR EACH ROW EXECUTE FUNCTION public.handle_new_review();
 
 -- ============================================================================
--- 5. COMMENTS & COMMUNITY DISCUSSION
+-- 8. REVIEW_SUGGESTIONS TABLE (Feedback/Suggestions on Reviews)
 -- ============================================================================
-CREATE TABLE IF NOT EXISTS public.comments (
-    id TEXT PRIMARY KEY DEFAULT ('comm_' || replace(uuid_generate_v4()::text, '-', '')),
-    project_id TEXT NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS public.review_suggestions (
+    id TEXT PRIMARY KEY DEFAULT ('revsug_' || replace(gen_random_uuid()::text, '-', '')),
+    review_id TEXT NOT NULL REFERENCES public.reviews(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    parent_comment_id TEXT REFERENCES public.comments(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    status TEXT DEFAULT 'open' CHECK (status IN ('open', 'applied', 'acknowledged')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_review_suggestions_review_id ON public.review_suggestions(review_id);
+CREATE INDEX IF NOT EXISTS idx_review_suggestions_user_id ON public.review_suggestions(user_id);
 
-DROP POLICY IF EXISTS "Comments are viewable by everyone" ON public.comments;
-CREATE POLICY "Comments are viewable by everyone" 
-ON public.comments FOR SELECT 
+ALTER TABLE public.review_suggestions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Review suggestions are viewable by everyone" ON public.review_suggestions;
+CREATE POLICY "Review suggestions are viewable by everyone" 
+ON public.review_suggestions FOR SELECT 
 USING (true);
 
-DROP POLICY IF EXISTS "Authenticated users can post comments" ON public.comments;
-CREATE POLICY "Authenticated users can post comments" 
-ON public.comments FOR INSERT 
+DROP POLICY IF EXISTS "Users can submit review suggestions" ON public.review_suggestions;
+CREATE POLICY "Users can submit review suggestions" 
+ON public.review_suggestions FOR INSERT 
 WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their review suggestions" ON public.review_suggestions;
+CREATE POLICY "Users can update their review suggestions" 
+ON public.review_suggestions FOR UPDATE 
+USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete their review suggestions" ON public.review_suggestions;
+CREATE POLICY "Users can delete their review suggestions" 
+ON public.review_suggestions FOR DELETE 
+USING (auth.uid() = user_id);
+
 -- ============================================================================
--- 6. PROJECT LIKES & UPVOTES (public.project_likes)
+-- 9. REVIEW_VOTES TABLE (Helpful / Unhelpful Votes on Reviews)
 -- ============================================================================
-CREATE TABLE IF NOT EXISTS public.project_likes (
+CREATE TABLE IF NOT EXISTS public.review_votes (
     id BIGSERIAL PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    user_name TEXT DEFAULT 'Innovator',
-    user_avatar TEXT DEFAULT '',
-    vote_type TEXT DEFAULT 'upvote',
+    review_id TEXT NOT NULL REFERENCES public.reviews(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    vote_type TEXT NOT NULL CHECK (vote_type IN ('upvote', 'downvote', 'helpful')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT unique_project_like UNIQUE (project_id, user_id)
+    CONSTRAINT unique_user_review_vote UNIQUE (review_id, user_id)
 );
 
--- Ensure columns exist if table was created previously
-ALTER TABLE public.project_likes ADD COLUMN IF NOT EXISTS user_name TEXT DEFAULT 'Innovator';
-ALTER TABLE public.project_likes ADD COLUMN IF NOT EXISTS user_avatar TEXT DEFAULT '';
-ALTER TABLE public.project_likes ADD COLUMN IF NOT EXISTS vote_type TEXT DEFAULT 'upvote';
+CREATE INDEX IF NOT EXISTS idx_review_votes_review_id ON public.review_votes(review_id);
+CREATE INDEX IF NOT EXISTS idx_review_votes_user_id ON public.review_votes(user_id);
 
-CREATE INDEX IF NOT EXISTS idx_project_likes_project_id ON public.project_likes(project_id);
-CREATE INDEX IF NOT EXISTS idx_project_likes_user_id ON public.project_likes(user_id);
+ALTER TABLE public.review_votes ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE public.project_likes ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Project likes viewable by everyone" ON public.project_likes;
-CREATE POLICY "Project likes viewable by everyone" 
-ON public.project_likes FOR SELECT 
+DROP POLICY IF EXISTS "Review votes are viewable by everyone" ON public.review_votes;
+CREATE POLICY "Review votes are viewable by everyone" 
+ON public.review_votes FOR SELECT 
 USING (true);
 
-DROP POLICY IF EXISTS "Project likes insertable by everyone" ON public.project_likes;
-CREATE POLICY "Project likes insertable by everyone" 
-ON public.project_likes FOR INSERT 
-WITH CHECK (true);
+DROP POLICY IF EXISTS "Users can vote on reviews" ON public.review_votes;
+CREATE POLICY "Users can vote on reviews" 
+ON public.review_votes FOR INSERT 
+WITH CHECK (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Project likes updatable by everyone" ON public.project_likes;
-CREATE POLICY "Project likes updatable by everyone" 
-ON public.project_likes FOR UPDATE 
-USING (true);
+DROP POLICY IF EXISTS "Users can update their review vote" ON public.review_votes;
+CREATE POLICY "Users can update their review vote" 
+ON public.review_votes FOR UPDATE 
+USING (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Project likes deletable by everyone" ON public.project_likes;
-CREATE POLICY "Project likes deletable by everyone" 
-ON public.project_likes FOR DELETE 
-USING (true);
+DROP POLICY IF EXISTS "Users can delete their review vote" ON public.review_votes;
+CREATE POLICY "Users can delete their review vote" 
+ON public.review_votes FOR DELETE 
+USING (auth.uid() = user_id);
 
--- Auto-sync projects.upvotes_count trigger on project_likes change
-CREATE OR REPLACE FUNCTION public.handle_project_like_sync()
+-- Trigger: Automatically sync review upvotes and downvotes
+CREATE OR REPLACE FUNCTION public.handle_review_vote_sync()
 RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        UPDATE public.projects
-        SET upvotes_count = COALESCE(upvotes_count, 0) + 1
-        WHERE id = NEW.project_id;
+        IF NEW.vote_type IN ('upvote', 'helpful') THEN
+            UPDATE public.reviews SET upvotes_count = COALESCE(upvotes_count, 0) + 1, updated_at = NOW() WHERE id = NEW.review_id;
+        ELSIF NEW.vote_type = 'downvote' THEN
+            UPDATE public.reviews SET downvotes_count = COALESCE(downvotes_count, 0) + 1, updated_at = NOW() WHERE id = NEW.review_id;
+        END IF;
         RETURN NEW;
     ELSIF TG_OP = 'DELETE' THEN
-        UPDATE public.projects
-        SET upvotes_count = GREATEST(0, COALESCE(upvotes_count, 1) - 1)
-        WHERE id = OLD.project_id;
+        IF OLD.vote_type IN ('upvote', 'helpful') THEN
+            UPDATE public.reviews SET upvotes_count = GREATEST(0, COALESCE(upvotes_count, 1) - 1), updated_at = NOW() WHERE id = OLD.review_id;
+        ELSIF OLD.vote_type = 'downvote' THEN
+            UPDATE public.reviews SET downvotes_count = GREATEST(0, COALESCE(downvotes_count, 1) - 1), updated_at = NOW() WHERE id = OLD.review_id;
+        END IF;
         RETURN OLD;
     END IF;
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-DROP TRIGGER IF EXISTS on_project_like_change ON public.project_likes;
-CREATE TRIGGER on_project_like_change
-AFTER INSERT OR DELETE ON public.project_likes
-FOR EACH ROW EXECUTE FUNCTION public.handle_project_like_sync();
-
--- Also support upvotes as alias table if needed
-CREATE TABLE IF NOT EXISTS public.upvotes (
-    id BIGSERIAL PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    user_name TEXT DEFAULT 'Innovator',
-    user_avatar TEXT DEFAULT '',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT unique_project_upvote UNIQUE (project_id, user_id)
-);
-
-ALTER TABLE public.upvotes ADD COLUMN IF NOT EXISTS user_name TEXT DEFAULT 'Innovator';
-ALTER TABLE public.upvotes ADD COLUMN IF NOT EXISTS user_avatar TEXT DEFAULT '';
-
-CREATE INDEX IF NOT EXISTS idx_upvotes_project_id ON public.upvotes(project_id);
-CREATE INDEX IF NOT EXISTS idx_upvotes_user_id ON public.upvotes(user_id);
-
-ALTER TABLE public.upvotes ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Upvotes viewable by everyone" ON public.upvotes;
-CREATE POLICY "Upvotes viewable by everyone" 
-ON public.upvotes FOR SELECT 
-USING (true);
-
-DROP POLICY IF EXISTS "Upvotes insertable by everyone" ON public.upvotes;
-CREATE POLICY "Upvotes insertable by everyone" 
-ON public.upvotes FOR INSERT 
-WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Upvotes deletable by everyone" ON public.upvotes;
-CREATE POLICY "Upvotes deletable by everyone" 
-ON public.upvotes FOR DELETE 
-USING (true);
+DROP TRIGGER IF EXISTS on_review_vote_sync ON public.review_votes;
+CREATE TRIGGER on_review_vote_sync
+AFTER INSERT OR DELETE ON public.review_votes
+FOR EACH ROW EXECUTE FUNCTION public.handle_review_vote_sync();
 
 -- ============================================================================
--- 7. NOTIFICATIONS
--- ============================================================================
-CREATE TABLE IF NOT EXISTS public.notifications (
-    id TEXT PRIMARY KEY DEFAULT ('notif_' || replace(uuid_generate_v4()::text, '-', '')),
-    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    title TEXT DEFAULT 'Notification',
-    message TEXT NOT NULL,
-    type TEXT NOT NULL, -- 'REVIEW_RECEIVED' | 'PROJECT_LIKED' | 'MILESTONE_REACHED' | 'ASSIGNMENT'
-    project_id TEXT REFERENCES public.projects(id) ON DELETE CASCADE,
-    is_read BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Users can only see their own notifications" ON public.notifications;
-CREATE POLICY "Users can only see their own notifications" 
-ON public.notifications FOR SELECT 
-USING (auth.uid() = user_id);
-
-DROP POLICY IF EXISTS "Authenticated users can insert notifications" ON public.notifications;
-CREATE POLICY "Authenticated users can insert notifications" 
-ON public.notifications FOR INSERT 
-WITH CHECK (auth.role() = 'authenticated');
-
-DROP POLICY IF EXISTS "Users can update their own notifications" ON public.notifications;
-CREATE POLICY "Users can update their own notifications" 
-ON public.notifications FOR UPDATE 
-USING (auth.uid() = user_id);
-
--- ============================================================================
--- 8. STORAGE BUCKET POLICIES (for Images & Media)
--- ============================================================================
--- Creates 'project-media' and 'avatars' buckets in Supabase Storage
-INSERT INTO storage.buckets (id, name, public) 
-VALUES ('project-media', 'project-media', true)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO storage.buckets (id, name, public) 
-VALUES ('avatars', 'avatars', true)
-ON CONFLICT (id) DO NOTHING;
-
--- Storage Policy: Public viewable
-DROP POLICY IF EXISTS "Public Media Access" ON storage.objects;
-CREATE POLICY "Public Media Access" 
-ON storage.objects FOR SELECT 
-USING (bucket_id IN ('project-media', 'avatars'));
-
--- Storage Policy: Authenticated Uploads
-DROP POLICY IF EXISTS "Authenticated Upload Access" ON storage.objects;
-CREATE POLICY "Authenticated Upload Access" 
-ON storage.objects FOR INSERT 
-WITH CHECK (auth.role() = 'authenticated');
-
--- ============================================================================
--- 9. EXTERNAL INNOVATION DISCOVERIES TABLE (Innovation Discovery Engine)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS public.external_innovations (
-    id TEXT PRIMARY KEY DEFAULT ('ext_' || replace(uuid_generate_v4()::text, '-', '')),
-    title TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    ai_summary TEXT,
-    source_name TEXT NOT NULL,
-    source_url TEXT UNIQUE NOT NULL,
-    image_url TEXT,
-    category TEXT NOT NULL DEFAULT 'Technology',
-    tags TEXT[] DEFAULT ARRAY[]::TEXT[],
-    content_hash TEXT UNIQUE NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
-    views_count INTEGER DEFAULT 0,
-    likes_count INTEGER DEFAULT 0,
-    published_at TIMESTAMPTZ DEFAULT NOW(),
-    discovered_at TIMESTAMPTZ DEFAULT NOW(),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Indices for fast searching, filtering, and deduplication
-CREATE INDEX IF NOT EXISTS idx_external_innovations_category ON public.external_innovations(category);
-CREATE INDEX IF NOT EXISTS idx_external_innovations_published ON public.external_innovations(published_at);
-CREATE INDEX IF NOT EXISTS idx_external_innovations_hash ON public.external_innovations(content_hash);
-CREATE INDEX IF NOT EXISTS idx_external_innovations_active ON public.external_innovations(is_active);
-
--- Enable RLS for external_innovations
-ALTER TABLE public.external_innovations ENABLE ROW LEVEL SECURITY;
-
--- Read Access: All users (authenticated and public) can view active discoveries
-DROP POLICY IF EXISTS "External innovations are viewable by everyone" ON public.external_innovations;
-CREATE POLICY "External innovations are viewable by everyone" 
-ON public.external_innovations FOR SELECT 
-USING (is_active = true);
-
--- Interaction Access: Authenticated users can update like/view counts
-DROP POLICY IF EXISTS "Authenticated users can update discovery interaction counts" ON public.external_innovations;
-CREATE POLICY "Authenticated users can update discovery interaction counts" 
-ON public.external_innovations FOR UPDATE 
-USING (auth.role() = 'authenticated');
-
--- Write/Delete Access: Backend service role only
-DROP POLICY IF EXISTS "Service role manages external innovations" ON public.external_innovations;
-CREATE POLICY "Service role manages external innovations" 
-ON public.external_innovations FOR ALL 
-USING (auth.jwt() ->> 'role' = 'service_role' OR auth.role() = 'service_role');
-
--- ============================================================================
--- 10. EXTERNAL DISCOVERY SOURCES (Telemetry & Governance)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS public.external_sources (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    feed_type TEXT DEFAULT 'RSS', -- 'RSS' | 'API' | 'ATOM'
-    category_hint TEXT DEFAULT 'Technology',
-    is_enabled BOOLEAN DEFAULT TRUE,
-    last_fetched_at TIMESTAMPTZ,
-    last_status TEXT DEFAULT 'IDLE', -- 'SUCCESS' | 'ERROR' | 'IDLE'
-    last_error TEXT,
-    items_count INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-ALTER TABLE public.external_sources ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "External sources viewable by everyone" ON public.external_sources;
-CREATE POLICY "External sources viewable by everyone" 
-ON public.external_sources FOR SELECT 
-USING (true);
-
--- Seed Approved Global Innovation Feeds
-INSERT INTO public.external_sources (id, name, url, feed_type, category_hint, is_enabled) VALUES
-('src_techcrunch', 'TechCrunch', 'https://techcrunch.com/feed/', 'RSS', 'AI & Machine Learning', true),
-('src_sciencedaily_ai', 'ScienceDaily AI', 'https://www.sciencedaily.com/rss/computers_math/artificial_intelligence.xml', 'RSS', 'AI & Machine Learning', true),
-('src_sciencedaily_tech', 'ScienceDaily Tech', 'https://www.sciencedaily.com/rss/matter_energy/technology.xml', 'RSS', 'Web Technology', true),
-('src_arxiv_ai', 'ArXiv AI & ML', 'https://rss.arxiv.org/rss/cs.AI', 'RSS', 'AI & Machine Learning', true),
-('src_hackernews', 'Hacker News Top Innovations', 'https://hacker-news.firebaseio.com/v0/topstories.json', 'API', 'Web Technology', true)
-ON CONFLICT (id) DO NOTHING;
-
--- ============================================================================
--- 11. UNIFIED VOTES TABLE (Reviews, Discussions, Comments, Resources)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS public.votes (
-    id BIGSERIAL PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    target_type TEXT NOT NULL, -- 'review' | 'discussion' | 'comment' | 'resource'
-    target_id TEXT NOT NULL,
-    vote_type TEXT NOT NULL,   -- 'upvote' | 'downvote'
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT unique_user_target_vote UNIQUE (user_id, target_type, target_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_votes_target ON public.votes(target_type, target_id);
-CREATE INDEX IF NOT EXISTS idx_votes_user_id ON public.votes(user_id);
-
-ALTER TABLE public.votes ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Votes viewable by everyone" ON public.votes;
-CREATE POLICY "Votes viewable by everyone" 
-ON public.votes FOR SELECT 
-USING (true);
-
-DROP POLICY IF EXISTS "Users can insert their own votes" ON public.votes;
-CREATE POLICY "Users can insert their own votes" 
-ON public.votes FOR INSERT 
-WITH CHECK (auth.uid() = user_id);
-
-DROP POLICY IF EXISTS "Users can update their own votes" ON public.votes;
-CREATE POLICY "Users can update their own votes" 
-ON public.votes FOR UPDATE 
-USING (auth.uid() = user_id);
-
-DROP POLICY IF EXISTS "Users can delete their own votes" ON public.votes;
-CREATE POLICY "Users can delete their own votes" 
-ON public.votes FOR DELETE 
-USING (auth.uid() = user_id);
-
--- ============================================================================
--- 12. COMMUNITY DISCUSSIONS / POSTS TABLE
+-- 10. COMMUNITY_POSTS TABLE (Discussions, Questions, Collaboration)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.community_posts (
-    id TEXT PRIMARY KEY DEFAULT ('post_' || replace(uuid_generate_v4()::text, '-', '')),
+    id TEXT PRIMARY KEY DEFAULT ('post_' || replace(gen_random_uuid()::text, '-', '')),
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
+    category_name TEXT NOT NULL DEFAULT 'Technology',
     title TEXT NOT NULL,
     content TEXT NOT NULL,
-    post_type TEXT NOT NULL DEFAULT 'DISCUSSION', -- 'QUESTION' | 'DISCUSSION' | 'FEEDBACK_REQUEST' | 'COLLABORATION' | 'CHALLENGE'
-    category_id TEXT REFERENCES public.categories(id),
-    category_name TEXT NOT NULL,
+    post_type TEXT NOT NULL DEFAULT 'DISCUSSION' CHECK (post_type IN ('QUESTION', 'DISCUSSION', 'FEEDBACK_REQUEST', 'COLLABORATION', 'CHALLENGE')),
     tags TEXT[] DEFAULT ARRAY[]::TEXT[],
     upvotes_count INTEGER DEFAULT 0,
     downvotes_count INTEGER DEFAULT 0,
@@ -543,11 +589,12 @@ CREATE TABLE IF NOT EXISTS public.community_posts (
 CREATE INDEX IF NOT EXISTS idx_community_posts_user_id ON public.community_posts(user_id);
 CREATE INDEX IF NOT EXISTS idx_community_posts_category_id ON public.community_posts(category_id);
 CREATE INDEX IF NOT EXISTS idx_community_posts_post_type ON public.community_posts(post_type);
+CREATE INDEX IF NOT EXISTS idx_community_posts_created_at ON public.community_posts(created_at);
 
 ALTER TABLE public.community_posts ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Community posts viewable by everyone" ON public.community_posts;
-CREATE POLICY "Community posts viewable by everyone" 
+DROP POLICY IF EXISTS "Community posts are viewable by everyone" ON public.community_posts;
+CREATE POLICY "Community posts are viewable by everyone" 
 ON public.community_posts FOR SELECT 
 USING (true);
 
@@ -567,10 +614,10 @@ ON public.community_posts FOR DELETE
 USING (auth.uid() = user_id);
 
 -- ============================================================================
--- 13. COMMUNITY POST COMMENTS TABLE
+-- 11. COMMUNITY_COMMENTS TABLE (Comments on Community Posts)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.community_comments (
-    id TEXT PRIMARY KEY DEFAULT ('comm_' || replace(uuid_generate_v4()::text, '-', '')),
+    id TEXT PRIMARY KEY DEFAULT ('comm_' || replace(gen_random_uuid()::text, '-', '')),
     post_id TEXT NOT NULL REFERENCES public.community_posts(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     parent_comment_id TEXT REFERENCES public.community_comments(id) ON DELETE CASCADE,
@@ -583,11 +630,12 @@ CREATE TABLE IF NOT EXISTS public.community_comments (
 
 CREATE INDEX IF NOT EXISTS idx_community_comments_post_id ON public.community_comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_community_comments_user_id ON public.community_comments(user_id);
+CREATE INDEX IF NOT EXISTS idx_community_comments_parent_id ON public.community_comments(parent_comment_id);
 
 ALTER TABLE public.community_comments ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Community comments viewable by everyone" ON public.community_comments;
-CREATE POLICY "Community comments viewable by everyone" 
+DROP POLICY IF EXISTS "Community comments are viewable by everyone" ON public.community_comments;
+CREATE POLICY "Community comments are viewable by everyone" 
 ON public.community_comments FOR SELECT 
 USING (true);
 
@@ -606,85 +654,116 @@ CREATE POLICY "Users can delete their own community comments"
 ON public.community_comments FOR DELETE 
 USING (auth.uid() = user_id);
 
--- ============================================================================
--- 14. COMMUNITY RESOURCES TABLE
--- ============================================================================
-CREATE TABLE IF NOT EXISTS public.community_resources (
-    id TEXT PRIMARY KEY DEFAULT ('res_' || replace(uuid_generate_v4()::text, '-', '')),
-    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    resource_url TEXT NOT NULL,
-    resource_type TEXT NOT NULL DEFAULT 'TOOL', -- 'TOOL' | 'ARTICLE' | 'RESEARCH' | 'GITHUB' | 'API' | 'DATASET' | 'VIDEO' | 'COURSE' | 'OTHER'
-    category_id TEXT REFERENCES public.categories(id),
-    category_name TEXT NOT NULL,
-    tags TEXT[] DEFAULT ARRAY[]::TEXT[],
-    upvotes_count INTEGER DEFAULT 0,
-    downvotes_count INTEGER DEFAULT 0,
-    bookmarks_count INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- Trigger: Automatically sync community_posts comments_count
+CREATE OR REPLACE FUNCTION public.handle_community_comment_sync()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE public.community_posts
+        SET comments_count = COALESCE(comments_count, 0) + 1,
+            updated_at = NOW()
+        WHERE id = NEW.post_id;
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        UPDATE public.community_posts
+        SET comments_count = GREATEST(0, COALESCE(comments_count, 1) - 1),
+            updated_at = NOW()
+        WHERE id = OLD.post_id;
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
-CREATE INDEX IF NOT EXISTS idx_community_resources_user_id ON public.community_resources(user_id);
-CREATE INDEX IF NOT EXISTS idx_community_resources_category_id ON public.community_resources(category_id);
-CREATE INDEX IF NOT EXISTS idx_community_resources_type ON public.community_resources(resource_type);
-
-ALTER TABLE public.community_resources ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Community resources viewable by everyone" ON public.community_resources;
-CREATE POLICY "Community resources viewable by everyone" 
-ON public.community_resources FOR SELECT 
-USING (true);
-
-DROP POLICY IF EXISTS "Authenticated users can share resources" ON public.community_resources;
-CREATE POLICY "Authenticated users can share resources" 
-ON public.community_resources FOR INSERT 
-WITH CHECK (auth.uid() = user_id);
-
-DROP POLICY IF EXISTS "Users can update their own shared resources" ON public.community_resources;
-CREATE POLICY "Users can update their own shared resources" 
-ON public.community_resources FOR UPDATE 
-USING (auth.uid() = user_id);
-
-DROP POLICY IF EXISTS "Users can delete their own shared resources" ON public.community_resources;
-CREATE POLICY "Users can delete their own shared resources" 
-ON public.community_resources FOR DELETE 
-USING (auth.uid() = user_id);
+DROP TRIGGER IF EXISTS on_community_comment_sync ON public.community_comments;
+CREATE TRIGGER on_community_comment_sync
+AFTER INSERT OR DELETE ON public.community_comments
+FOR EACH ROW EXECUTE FUNCTION public.handle_community_comment_sync();
 
 -- ============================================================================
--- 15. RESOURCE BOOKMARKS TABLE
+-- 12. COMMUNITY_VOTES TABLE (Votes on Posts & Comments)
 -- ============================================================================
-CREATE TABLE IF NOT EXISTS public.resource_bookmarks (
+CREATE TABLE IF NOT EXISTS public.community_votes (
     id BIGSERIAL PRIMARY KEY,
-    resource_id TEXT NOT NULL REFERENCES public.community_resources(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+    target_id TEXT NOT NULL,
+    vote_type TEXT NOT NULL CHECK (vote_type IN ('upvote', 'downvote')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT unique_user_resource_bookmark UNIQUE (user_id, resource_id)
+    CONSTRAINT unique_user_community_vote UNIQUE (user_id, target_type, target_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_resource_bookmarks_user_id ON public.resource_bookmarks(user_id);
-CREATE INDEX IF NOT EXISTS idx_resource_bookmarks_res_id ON public.resource_bookmarks(resource_id);
+CREATE INDEX IF NOT EXISTS idx_community_votes_target ON public.community_votes(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_community_votes_user_id ON public.community_votes(user_id);
 
-ALTER TABLE public.resource_bookmarks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_votes ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Resource bookmarks viewable by everyone" ON public.resource_bookmarks;
-CREATE POLICY "Resource bookmarks viewable by everyone" 
-ON public.resource_bookmarks FOR SELECT 
+DROP POLICY IF EXISTS "Community votes are viewable by everyone" ON public.community_votes;
+CREATE POLICY "Community votes are viewable by everyone" 
+ON public.community_votes FOR SELECT 
 USING (true);
 
-DROP POLICY IF EXISTS "Users can insert their own bookmarks" ON public.resource_bookmarks;
-CREATE POLICY "Users can insert their own bookmarks" 
-ON public.resource_bookmarks FOR INSERT 
+DROP POLICY IF EXISTS "Users can vote on community items" ON public.community_votes;
+CREATE POLICY "Users can vote on community items" 
+ON public.community_votes FOR INSERT 
 WITH CHECK (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can delete their own bookmarks" ON public.resource_bookmarks;
-CREATE POLICY "Users can delete their own bookmarks" 
-ON public.resource_bookmarks FOR DELETE 
+DROP POLICY IF EXISTS "Users can update their community vote" ON public.community_votes;
+CREATE POLICY "Users can update their community vote" 
+ON public.community_votes FOR UPDATE 
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete their community vote" ON public.community_votes;
+CREATE POLICY "Users can delete their community vote" 
+ON public.community_votes FOR DELETE 
+USING (auth.uid() = user_id);
+
+-- Trigger: Automatically sync community post & comment vote counts
+CREATE OR REPLACE FUNCTION public.handle_community_vote_sync()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.target_type = 'post' THEN
+            IF NEW.vote_type = 'upvote' THEN
+                UPDATE public.community_posts SET upvotes_count = COALESCE(upvotes_count, 0) + 1 WHERE id = NEW.target_id;
+            ELSE
+                UPDATE public.community_posts SET downvotes_count = COALESCE(downvotes_count, 0) + 1 WHERE id = NEW.target_id;
+            END IF;
+        ELSIF NEW.target_type = 'comment' THEN
+            IF NEW.vote_type = 'upvote' THEN
+                UPDATE public.community_comments SET upvotes_count = COALESCE(upvotes_count, 0) + 1 WHERE id = NEW.target_id;
+            ELSE
+                UPDATE public.community_comments SET downvotes_count = COALESCE(downvotes_count, 0) + 1 WHERE id = NEW.target_id;
+            END IF;
+        END IF;
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        IF OLD.target_type = 'post' THEN
+            IF OLD.vote_type = 'upvote' THEN
+                UPDATE public.community_posts SET upvotes_count = GREATEST(0, COALESCE(upvotes_count, 1) - 1) WHERE id = OLD.target_id;
+            ELSE
+                UPDATE public.community_posts SET downvotes_count = GREATEST(0, COALESCE(downvotes_count, 1) - 1) WHERE id = OLD.target_id;
+            END IF;
+        ELSIF OLD.target_type = 'comment' THEN
+            IF OLD.vote_type = 'upvote' THEN
+                UPDATE public.community_comments SET upvotes_count = GREATEST(0, COALESCE(upvotes_count, 1) - 1) WHERE id = OLD.target_id;
+            ELSE
+                UPDATE public.community_comments SET downvotes_count = GREATEST(0, COALESCE(downvotes_count, 1) - 1) WHERE id = OLD.target_id;
+            END IF;
+        END IF;
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_community_vote_sync ON public.community_votes;
+CREATE TRIGGER on_community_vote_sync
+AFTER INSERT OR DELETE ON public.community_votes
+FOR EACH ROW EXECUTE FUNCTION public.handle_community_vote_sync();
+
 -- ============================================================================
--- 16. PRIVATE MESSAGES & SUGGESTIONS TABLE
+-- 13. MESSAGES TABLE (Direct Messages & Suggestions)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -692,6 +771,7 @@ CREATE TABLE IF NOT EXISTS public.messages (
     receiver_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     message_type TEXT NOT NULL DEFAULT 'message', -- 'message' | 'suggestion'
+    related_project_id TEXT REFERENCES public.projects(id) ON DELETE SET NULL,
     is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -703,13 +783,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_created_at ON public.messages(created_at
 
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Messages viewable only by sender or receiver" ON public.messages;
-CREATE POLICY "Messages viewable only by sender or receiver"
+DROP POLICY IF EXISTS "Messages viewable by sender or receiver" ON public.messages;
+CREATE POLICY "Messages viewable by sender or receiver"
 ON public.messages FOR SELECT
 USING (auth.uid() = sender_id OR auth.uid() = receiver_id);
 
-DROP POLICY IF EXISTS "Users can insert messages as sender" ON public.messages;
-CREATE POLICY "Users can insert messages as sender"
+DROP POLICY IF EXISTS "Users can send messages" ON public.messages;
+CREATE POLICY "Users can send messages"
 ON public.messages FOR INSERT
 WITH CHECK (auth.uid() = sender_id);
 
@@ -718,22 +798,22 @@ CREATE POLICY "Participants can update messages"
 ON public.messages FOR UPDATE
 USING (auth.uid() = sender_id OR auth.uid() = receiver_id);
 
-DROP POLICY IF EXISTS "Senders can delete their own messages" ON public.messages;
-CREATE POLICY "Senders can delete their own messages"
+DROP POLICY IF EXISTS "Senders can delete their messages" ON public.messages;
+CREATE POLICY "Senders can delete their messages"
 ON public.messages FOR DELETE
 USING (auth.uid() = sender_id);
 
 -- ============================================================================
--- 17. NOTIFICATIONS TABLE
+-- 14. NOTIFICATIONS TABLE (User Alerts & Telemetry)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.notifications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     actor_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
-    type TEXT NOT NULL, -- 'MESSAGE' | 'SUGGESTION' | 'REVIEW' | 'LIKE' | 'SYSTEM'
-    title TEXT NOT NULL,
+    type TEXT NOT NULL, -- 'REVIEW_RECEIVED' | 'PROJECT_VOTED' | 'SUGGESTION_RECEIVED' | 'MESSAGE' | 'SYSTEM_ALERT' | 'PROJECT_FOLLOWED'
+    title TEXT NOT NULL DEFAULT 'Notification',
     message TEXT NOT NULL,
-    related_project_id UUID REFERENCES public.projects(id) ON DELETE SET NULL,
+    related_project_id TEXT REFERENCES public.projects(id) ON DELETE SET NULL,
     related_message_id UUID REFERENCES public.messages(id) ON DELETE SET NULL,
     is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -744,24 +824,98 @@ CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON public.notifications(is_
 
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Notifications viewable only by recipient" ON public.notifications;
-CREATE POLICY "Notifications viewable only by recipient"
+DROP POLICY IF EXISTS "Users can view their notifications" ON public.notifications;
+CREATE POLICY "Users can view their notifications"
 ON public.notifications FOR SELECT
 USING (auth.uid() = user_id);
 
 DROP POLICY IF EXISTS "Authenticated users can create notifications" ON public.notifications;
 CREATE POLICY "Authenticated users can create notifications"
 ON public.notifications FOR INSERT
-WITH CHECK (auth.uid() IS NOT NULL);
+WITH CHECK (auth.role() = 'authenticated');
 
-DROP POLICY IF EXISTS "Recipients can update their notifications" ON public.notifications;
-CREATE POLICY "Recipients can update their notifications"
+DROP POLICY IF EXISTS "Users can update their notifications" ON public.notifications;
+CREATE POLICY "Users can update their notifications"
 ON public.notifications FOR UPDATE
 USING (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Recipients can delete their notifications" ON public.notifications;
-CREATE POLICY "Recipients can delete their notifications"
+DROP POLICY IF EXISTS "Users can delete their notifications" ON public.notifications;
+CREATE POLICY "Users can delete their notifications"
 ON public.notifications FOR DELETE
 USING (auth.uid() = user_id);
 
+-- ============================================================================
+-- 15. PROJECT_FOLLOWS TABLE (Subscriptions & Bookmarks)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.project_follows (
+    id BIGSERIAL PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT unique_user_project_follow UNIQUE (project_id, user_id)
+);
 
+CREATE INDEX IF NOT EXISTS idx_project_follows_project_id ON public.project_follows(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_follows_user_id ON public.project_follows(user_id);
+
+ALTER TABLE public.project_follows ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Project follows are viewable by everyone" ON public.project_follows;
+CREATE POLICY "Project follows are viewable by everyone" 
+ON public.project_follows FOR SELECT 
+USING (true);
+
+DROP POLICY IF EXISTS "Users can follow projects" ON public.project_follows;
+CREATE POLICY "Users can follow projects" 
+ON public.project_follows FOR INSERT 
+WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can unfollow projects" ON public.project_follows;
+CREATE POLICY "Users can unfollow projects" 
+ON public.project_follows FOR DELETE 
+USING (auth.uid() = user_id);
+
+-- ============================================================================
+-- 16. STORAGE BUCKETS CONFIGURATION
+-- ============================================================================
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('project-media', 'project-media', true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('avatars', 'avatars', true)
+ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "Public Media Access" ON storage.objects;
+CREATE POLICY "Public Media Access" 
+ON storage.objects FOR SELECT 
+USING (bucket_id IN ('project-media', 'avatars'));
+
+DROP POLICY IF EXISTS "Authenticated Upload Access" ON storage.objects;
+CREATE POLICY "Authenticated Upload Access" 
+ON storage.objects FOR INSERT 
+WITH CHECK (auth.role() = 'authenticated');
+
+-- ============================================================================
+-- 17. REALTIME REPLICATION (Enable live sync on dynamic tables)
+-- ============================================================================
+DO $$
+BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE 
+        public.profiles,
+        public.projects,
+        public.project_votes,
+        public.project_suggestions,
+        public.reviews,
+        public.review_suggestions,
+        public.review_votes,
+        public.community_posts,
+        public.community_comments,
+        public.community_votes,
+        public.messages,
+        public.notifications,
+        public.project_follows;
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL; -- Handle if already added or publication differs
+END $$;

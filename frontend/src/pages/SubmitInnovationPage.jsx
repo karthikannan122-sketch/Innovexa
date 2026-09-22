@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { StorageService } from '../services/storage';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -16,7 +17,7 @@ import {
   Search, 
   ShieldCheck, 
   ExternalLink, 
-  Save,
+  Save, 
   RotateCcw,
   AlertCircle,
   Lightbulb,
@@ -27,19 +28,31 @@ import {
   Globe,
   Play,
   Code2,
-  Smartphone,
   Check,
   CheckCircle
 } from 'lucide-react';
 import { SupabaseService } from '../services/supabaseService';
+import { getProjectCategories } from '../services/projectCategories';
 import { AIService } from '../services/aiService';
 import { ProblemDetectionAgent, InnovationResearchAgent } from '../services/aiAgents';
 
 const DRAFT_STORAGE_KEY = 'innovexa_project_create_draft_v4';
 
+const loadInitialDraft = () => {
+  try {
+    const savedDraft = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (savedDraft) {
+      return JSON.parse(savedDraft);
+    }
+  } catch (e) {
+    console.warn('Draft parse error:', e);
+  }
+  return null;
+};
+
 /**
  * SubmitInnovationPage — Unified Project Creation Studio
- * Tracks: 1. NEW IDEA | 2. NEW PRODUCT | 3. NEW STARTUP
+ * Tracks: 1. NEW IDEA | 2. NEW PRODUCT | 3. NEW STARTUP | 4. PROTOTYPE | 5. RESEARCH
  * Multi-step Workflow:
  *   STEP 01: Overview, Domain & Problem Statement
  *   STEP 02: Solution Thesis, Target Audience/Market, Stage & Links
@@ -47,32 +60,37 @@ const DRAFT_STORAGE_KEY = 'innovexa_project_create_draft_v4';
  */
 export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, selectedInnoId }) {
   const { currentUser, showToast } = useAuth();
+  const params = useParams();
+  const navigate = useNavigate();
+  const effectiveInnoId = selectedInnoId || params?.id;
+  const initialDraft = (!effectiveInnoId ? loadInitialDraft() : null);
+
   const [categories, setCategories] = useState([]);
-  const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [selectedCategoryId, setSelectedCategoryId] = useState(() => initialDraft?.formData?.category_id || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [creationTrack, setCreationTrack] = useState('STARTUP'); // 'IDEA' | 'PRODUCT' | 'STARTUP'
+  const [creationTrack, setCreationTrack] = useState(() => initialDraft?.creationTrack || 'IDEA');
   const [step, setStep] = useState(1);
 
-  // Single Unified Form State across All Steps & Tracks
-  const [formData, setFormData] = useState({
-    title: '',
-    category_id: '',
-    problem_statement: '',
-    proposed_solution: '',
-    target_users: '',
-    short_description: '',
-    tags_text: '',
-    cover_image: '',
-    features: [''],
-    has_live_product: false,
-    website_url: '',
-    demo_url: '',
-    github_url: '',
-    app_store_url: '',
-    play_store_url: '',
-    startup_stage: 'idea' // 'idea' | 'prototype' | 'mvp' | 'beta' | 'live'
-  });
+  // Single Unified Form State across All Steps & Tracks (Synchronously hydrated from draft)
+  const [formData, setFormData] = useState(() => ({
+    title: initialDraft?.formData?.title || '',
+    category_id: initialDraft?.formData?.category_id || '',
+    problem_statement: initialDraft?.formData?.problem_statement || '',
+    proposed_solution: initialDraft?.formData?.proposed_solution || '',
+    target_users: initialDraft?.formData?.target_users || '',
+    short_description: initialDraft?.formData?.short_description || '',
+    tags_text: initialDraft?.formData?.tags_text || '',
+    cover_image: initialDraft?.formData?.cover_image || '',
+    features: Array.isArray(initialDraft?.formData?.features) && initialDraft.formData.features.length > 0 ? initialDraft.formData.features : [''],
+    has_live_product: Boolean(initialDraft?.formData?.has_live_product),
+    website_url: initialDraft?.formData?.website_url || '',
+    demo_url: initialDraft?.formData?.demo_url || '',
+    github_url: initialDraft?.formData?.github_url || '',
+    app_store_url: initialDraft?.formData?.app_store_url || '',
+    play_store_url: initialDraft?.formData?.play_store_url || '',
+    startup_stage: initialDraft?.formData?.startup_stage || 'idea'
+  }));
 
   const updateFormField = (field, value) => {
     setFormData(prev => ({
@@ -96,35 +114,53 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
   const [researchAgentResult, setResearchAgentResult] = useState(null);
   const [showResearchModal, setShowResearchModal] = useState(false);
 
+  // Phase 6 AI Feature States
+  const [isRecommendingCategory, setIsRecommendingCategory] = useState(false);
+  const [categoryRecommendationResult, setCategoryRecommendationResult] = useState(null);
+  const [isValidatingIdea, setIsValidatingIdea] = useState(false);
+  const [ideaValidationResult, setIdeaValidationResult] = useState(null);
+  const [showIdeaValidationModal, setShowIdeaValidationModal] = useState(false);
+
   // Step 3 Similarity Scanner state
   const [similarInnovations, setSimilarInnovations] = useState([]);
-  const [hasDraftRecovered, setHasDraftRecovered] = useState(false);
+  const [hasDraftRecovered, setHasDraftRecovered] = useState(() => Boolean(initialDraft?.formData?.title || initialDraft?.formData?.problem_statement));
   const [isSavedRecently, setIsSavedRecently] = useState(false);
 
   // Fetch categories from Supabase on mount
   useEffect(() => {
+    let isMounted = true;
     const fetchCategories = async () => {
-      const { data: categories, error } = await supabase
-        .from("categories")
-        .select("*")
-        .order("name");
-
-      if (error) {
-        console.error("Failed to fetch categories:", error);
-        return;
+      try {
+        const data = await getProjectCategories();
+        if (isMounted && data && data.length > 0) {
+          setCategories(data);
+          const initialCatId = data[0].id;
+          setSelectedCategoryId(prev => (prev && data.some(c => c.id === prev) ? prev : initialCatId));
+          setFormData(prev => ({
+            ...prev,
+            category_id: prev.category_id && data.some(c => c.id === prev.category_id) ? prev.category_id : initialCatId
+          }));
+          return;
+        }
+      } catch (error) {
+        console.error("Category loading failed:", error);
       }
 
-      if (categories && categories.length > 0) {
-        setCategories(categories);
-        setSelectedCategoryId(prev => prev || categories[0].id);
+      // Fallback to standard taxonomy if unauthenticated
+      const fallbackCats = StorageService.getCategories();
+      if (isMounted && fallbackCats && fallbackCats.length > 0) {
+        setCategories(fallbackCats);
+        const initialCatId = fallbackCats[0].id;
+        setSelectedCategoryId(prev => (prev && fallbackCats.some(c => c.id === prev) ? prev : initialCatId));
         setFormData(prev => ({
           ...prev,
-          category_id: prev.category_id && categories.some(c => c.id === prev.category_id) ? prev.category_id : categories[0].id
+          category_id: prev.category_id && fallbackCats.some(c => c.id === prev.category_id) ? prev.category_id : initialCatId
         }));
       }
     };
 
     fetchCategories();
+    return () => { isMounted = false; };
   }, []);
 
   // Pre-populate fields if editing an existing project
@@ -137,11 +173,13 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
         p = res.data;
       }
       if (p) {
-        const track = (p.project_type || p.creation_type || 'STARTUP').toUpperCase();
-        setCreationTrack(track === 'PRODUCT' ? 'PRODUCT' : (track === 'IDEA' ? 'IDEA' : 'STARTUP'));
+        const track = (p.project_type || p.creation_type || 'IDEA').toUpperCase();
+        setCreationTrack(track === 'PRODUCT' ? 'PRODUCT' : (track === 'STARTUP' ? 'STARTUP' : 'IDEA'));
+        const catId = p.category_id || categories[0]?.id || '9b4e03a7-8261-4bf2-a2d9-12953a9316ae';
+        setSelectedCategoryId(catId);
         setFormData({
           title: p.title || '',
-          category_id: p.category_id || categories[0]?.id || '93fe2938-c843-4fa4-8b01-b07d59990023',
+          category_id: catId,
           problem_statement: p.problem_statement || '',
           proposed_solution: p.proposed_solution || '',
           target_users: p.target_users || '',
@@ -160,40 +198,23 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
       }
     };
     loadEditingProject();
-  }, [selectedInnoId]);
+  }, [selectedInnoId, categories]);
 
-  // Load saved draft on mount (if not editing an existing project)
+  // Debounced autosave draft whenever formData or creationTrack changes
   useEffect(() => {
     if (selectedInnoId) return;
-    try {
-      const savedDraft = localStorage.getItem(DRAFT_STORAGE_KEY);
-      if (savedDraft) {
-        const d = JSON.parse(savedDraft);
-        if (d.creationTrack) setCreationTrack(d.creationTrack);
-        if (d.formData) {
-          setFormData(prev => ({
-            ...prev,
-            ...d.formData
-          }));
-          setHasDraftRecovered(true);
-        }
+    const timer = setTimeout(() => {
+      if (formData.title || formData.problem_statement || formData.proposed_solution || formData.short_description) {
+        const draft = {
+          creationTrack,
+          formData,
+          updatedAt: Date.now()
+        };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+        setIsSavedRecently(true);
       }
-    } catch (e) {
-      console.warn('Draft parse error:', e);
-    }
-  }, [selectedInnoId]);
+    }, 500);
 
-  // Autosave draft whenever formData or creationTrack changes
-  useEffect(() => {
-    if (selectedInnoId) return;
-    const draft = {
-      creationTrack,
-      formData,
-      updatedAt: Date.now()
-    };
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
-    setIsSavedRecently(true);
-    const timer = setTimeout(() => setIsSavedRecently(false), 1800);
     return () => clearTimeout(timer);
   }, [creationTrack, formData, selectedInnoId]);
 
@@ -252,6 +273,59 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
     if (!current.includes(tag)) {
       const updated = [...current, tag].join(', ');
       updateFormField('tags_text', updated);
+    }
+  };
+
+  // Phase 6 AI Feature: AI Category Recommendation Handler
+  const handleRecommendCategory = async () => {
+    if (!formData.title.trim() && !formData.problem_statement.trim()) {
+      showToast('Please enter a project title or problem statement first.', 'warning');
+      return;
+    }
+    setIsRecommendingCategory(true);
+    try {
+      const res = await AIService.recommendCategory({
+        title: formData.title.trim(),
+        problem_statement: formData.problem_statement.trim(),
+        proposed_solution: formData.proposed_solution.trim(),
+        description: formData.short_description.trim()
+      }, categories);
+
+      if (res && res.recommended_category) {
+        setSelectedCategoryId(res.recommended_category.id);
+        updateFormField('category_id', res.recommended_category.id);
+        setCategoryRecommendationResult(res);
+        showToast(`✦ AI Recommended Category: ${res.recommended_category.name}`, 'success');
+      }
+    } catch (e) {
+      showToast('Category recommendation unavailable.', 'info');
+    } finally {
+      setIsRecommendingCategory(false);
+    }
+  };
+
+  // Phase 6 AI Feature: AI Idea Validation Handler
+  const handleValidateIdea = async () => {
+    if (!formData.title.trim() && !formData.problem_statement.trim()) {
+      showToast('Please provide a title or problem statement first.', 'warning');
+      return;
+    }
+    setIsValidatingIdea(true);
+    setShowIdeaValidationModal(true);
+    try {
+      const catObj = categories.find(c => c.id === formData.category_id);
+      const res = await AIService.validateIdea({
+        title: formData.title.trim(),
+        problem: formData.problem_statement.trim(),
+        solution: formData.proposed_solution.trim() || formData.short_description.trim(),
+        target_market: formData.target_users.trim(),
+        category_name: catObj?.name || 'Technology'
+      });
+      setIdeaValidationResult(res);
+    } catch (e) {
+      showToast('Idea validation unavailable.', 'info');
+    } finally {
+      setIsValidatingIdea(false);
     }
   };
 
@@ -320,18 +394,12 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
     }
   };
 
-  const handleSaveDraftManual = () => {
+  const handleSaveDraftManual = async () => {
     if (!formData.title.trim()) {
       showToast('Please provide at least a project title before saving.', 'warning');
       return;
     }
-    const draft = {
-      creationTrack,
-      formData,
-      updatedAt: Date.now()
-    };
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
-    showToast('Draft successfully saved to local storage.', 'success');
+    await handleFinalSubmit(true);
   };
 
   const handleClearDraft = () => {
@@ -339,7 +407,7 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
       localStorage.removeItem(DRAFT_STORAGE_KEY);
       setFormData({
         title: '',
-        category_id: categories[0]?.id || '93fe2938-c843-4fa4-8b01-b07d59990023',
+        category_id: categories[0]?.id || '9b4e03a7-8261-4bf2-a2d9-12953a9316ae',
         problem_statement: '',
         proposed_solution: '',
         target_users: '',
@@ -355,6 +423,7 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
         play_store_url: '',
         startup_stage: 'idea'
       });
+      setCreationTrack('IDEA');
       setStep(1);
       setHasDraftRecovered(false);
       showToast('Draft cleared.', 'info');
@@ -387,9 +456,14 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
       showToast(`Please enter a title for your ${creationTrack.toLowerCase()}.`, 'warning');
       return;
     }
-    if (!formData.problem_statement.trim() || formData.problem_statement.trim().length < 15) {
-      showToast('Please describe the problem in at least 15 characters.', 'warning');
+    if (!formData.problem_statement.trim() || formData.problem_statement.trim().length < 5) {
+      showToast('Please enter a brief problem description (at least 5 characters).', 'warning');
       return;
+    }
+    if (!formData.category_id && categories.length > 0) {
+      const initialCatId = categories[0].id;
+      setSelectedCategoryId(initialCatId);
+      updateFormField('category_id', initialCatId);
     }
     setStep(2);
   };
@@ -429,12 +503,31 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
         showToast('Please select your current startup stage.', 'warning');
         return;
       }
+    } else if (creationTrack === 'PROTOTYPE') {
+      if (!formData.proposed_solution.trim() && !formData.short_description.trim()) {
+        showToast('Please describe your prototype solution.', 'warning');
+        return;
+      }
+      if (!formData.target_users.trim()) {
+        showToast('Please specify the target users or testers.', 'warning');
+        return;
+      }
+    } else if (creationTrack === 'RESEARCH') {
+      if (!formData.proposed_solution.trim() && !formData.short_description.trim()) {
+        showToast('Please outline your research methodology, findings or solution.', 'warning');
+        return;
+      }
+      if (!formData.target_users.trim()) {
+        showToast('Please specify target academic or industry beneficiaries.', 'warning');
+        return;
+      }
     }
 
     // Run similarity check in background for Step 3 review
+    const activeCatId = selectedCategoryId || formData.category_id || (categories[0]?.id);
     const currentDraft = {
       title: formData.title,
-      category_id: formData.category_id,
+      category_id: activeCatId,
       short_description: formData.short_description || formData.proposed_solution.slice(0, 140) || formData.problem_statement.slice(0, 140),
       problem_statement: formData.problem_statement,
       proposed_solution: formData.proposed_solution,
@@ -450,174 +543,159 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
 
   // Final Submit to Supabase / Save Draft
   const handleFinalSubmit = async (asDraftOnly = false) => {
-    // 1. Verify authenticated user
-    const { data: authData, error: authError } = await supabase.auth.getUser();
-    const effectiveUser = authData?.user || currentUser;
+    if (isSubmitting) return;
+
+    console.log("[CREATE PROJECT] COMPLETE FORM DATA:", formData);
+
+    // 1. Verify authenticated user via Supabase
+    let effectiveUser = null;
+    let authError = null;
+    try {
+      const { data: authData, error: err } = await supabase.auth.getUser();
+      authError = err;
+      if (authError) {
+        console.error('[CREATE PROJECT] auth error:', authError);
+      }
+      if (authData?.user) {
+        effectiveUser = authData.user;
+      }
+    } catch (e) {
+      console.warn('Auth check fallback to context user:', e);
+    }
+
+    if (!effectiveUser) {
+      effectiveUser = currentUser;
+    }
+
+    console.log("[CREATE PROJECT] authenticated user:", effectiveUser);
+    console.log("[CREATE PROJECT] auth error:", authError);
 
     if (!effectiveUser || !effectiveUser.id) {
-      showToast('Please sign in to create a startup.', 'warning');
+      showToast("Please sign in before creating a project.", "warning");
       return;
     }
 
-    // 2. Validate essential fields
+    // 2. Validate fields based on publication vs draft
     if (!formData.title.trim()) {
       showToast('Please enter a project title.', 'warning');
       setStep(1);
       return;
     }
-    if (!formData.problem_statement.trim() || formData.problem_statement.trim().length < 15) {
-      showToast('Please describe the problem in at least 15 characters.', 'warning');
-      setStep(1);
-      return;
-    }
-    if (creationTrack === 'STARTUP' && (!formData.proposed_solution.trim() || !formData.target_users.trim())) {
-      showToast('Please provide your startup solution and target market.', 'warning');
-      setStep(2);
-      return;
+
+    const solution = (formData.proposed_solution?.trim() || formData.short_description?.trim() || formData.problem_statement?.trim() || 'Solution under active formulation.');
+
+    if (!asDraftOnly) {
+      if (!formData.problem_statement.trim() || formData.problem_statement.trim().length < 5) {
+        showToast('Please describe the problem in at least 5 characters.', 'warning');
+        setStep(1);
+        return;
+      }
+
+      if (creationTrack === 'IDEA' && (!formData.proposed_solution.trim() && !formData.short_description.trim())) {
+        showToast('Please outline your proposed solution or short description.', 'warning');
+        setStep(2);
+        return;
+      }
+      if (creationTrack === 'STARTUP' && (!formData.proposed_solution.trim() && !formData.short_description.trim())) {
+        showToast('Please provide your startup solution and value proposition.', 'warning');
+        setStep(2);
+        return;
+      }
+      if (creationTrack === 'PRODUCT' && (!formData.short_description.trim() && !formData.proposed_solution.trim())) {
+        showToast('Please provide a description or pitch for your product.', 'warning');
+        setStep(2);
+        return;
+      }
+      if (creationTrack === 'PROTOTYPE' && (!formData.proposed_solution.trim() && !formData.short_description.trim())) {
+        showToast('Please describe your prototype solution.', 'warning');
+        setStep(2);
+        return;
+      }
+      if (creationTrack === 'RESEARCH' && (!formData.proposed_solution.trim() && !formData.short_description.trim())) {
+        showToast('Please outline your research methodology or findings.', 'warning');
+        setStep(2);
+        return;
+      }
     }
 
-    if (isSubmitting) return;
     setIsSubmitting(true);
 
-    const catObj = categories.find(c => c.id === formData.category_id);
-    let finalStage = 'idea';
-    if (creationTrack === 'PRODUCT') {
-      finalStage = formData.has_live_product ? 'live' : 'prototype';
-    } else if (creationTrack === 'STARTUP') {
-      finalStage = (formData.startup_stage || 'idea').toLowerCase();
-    }
-
-    const cleanFeatures = formData.features.map(f => f.trim()).filter(Boolean);
-    const desc = (formData.short_description.trim() || formData.proposed_solution.trim() || formData.problem_statement.trim() || formData.title.trim());
-    const launchUrl = (formData.website_url.trim() || formData.demo_url.trim() || null);
-
-    // Exact lowercase PostgreSQL check constraint value: 'idea' | 'product' | 'startup'
-    const dbProjectType = creationTrack.toLowerCase();
-
-    const projectPayload = {
-      title: cleanProjectTitle(formData.title.trim()),
-      category_id: formData.category_id,
-      category_name: catObj?.name || 'Technology',
-      short_description: desc,
-      description: desc,
-      problem_statement: formData.problem_statement.trim(),
-      proposed_solution: formData.proposed_solution.trim() || (creationTrack === 'PRODUCT' ? formData.short_description.trim() : ''),
-      target_users: formData.target_users.trim(),
-      project_type: dbProjectType,
-      creation_type: creationTrack,
-      innovation_type: creationTrack,
-      project_stage: finalStage,
-      status: asDraftOnly ? 'draft' : 'published',
-      launch_url: launchUrl,
-      website_url: formData.website_url.trim() || null,
-      demo_url: formData.demo_url.trim() || null,
-      github_url: formData.github_url.trim() || null,
-      app_store_url: formData.app_store_url.trim() || null,
-      play_store_url: formData.play_store_url.trim() || null,
-      has_live_product: Boolean(formData.has_live_product || formData.website_url || formData.demo_url),
-      features: cleanFeatures,
-      tags: formData.tags_text.split(',').map(s => s.trim()).filter(Boolean),
-      cover_image: formData.cover_image.trim() || null,
-      asDraftOnly
-    };
-
     try {
+      const activeCatId = selectedCategoryId || formData.category_id || (categories[0]?.id) || '9b4e03a7-8261-4bf2-a2d9-12953a9316ae';
+      const catObj = categories.find(c => c.id === activeCatId);
+
+      let finalStage = 'idea';
+      if (creationTrack === 'PRODUCT') {
+        finalStage = formData.has_live_product ? 'launched' : 'prototype';
+      } else if (creationTrack === 'STARTUP') {
+        const s = (formData.startup_stage || 'idea').toLowerCase();
+        if (['idea', 'concept', 'prototype', 'development', 'testing', 'launched'].includes(s)) {
+          finalStage = s;
+        } else if (s === 'live' || s === 'mvp' || s === 'beta') {
+          finalStage = 'launched';
+        }
+      } else if (creationTrack === 'PROTOTYPE') {
+        finalStage = 'prototype';
+      } else if (creationTrack === 'RESEARCH') {
+        finalStage = 'concept';
+      }
+
+      const cleanFeatures = formData.features.map(f => f.trim()).filter(Boolean);
+      const desc = (formData.short_description.trim() || formData.proposed_solution.trim() || formData.problem_statement.trim() || formData.title.trim());
+      const launchUrl = (formData.website_url.trim() || formData.demo_url.trim() || null);
+      const dbProjectType = creationTrack.toLowerCase();
+
+      const projectPayload = {
+        user_id: effectiveUser.id,
+        category_id: activeCatId,
+        category_name: catObj?.name || 'Technology',
+        title: cleanProjectTitle(formData.title.trim()),
+        short_description: desc,
+        description: desc,
+        problem_statement: formData.problem_statement.trim(),
+        proposed_solution: solution,
+        target_users: formData.target_users.trim(),
+        project_type: dbProjectType,
+        creation_type: creationTrack,
+        innovation_type: creationTrack.toLowerCase(),
+        project_stage: finalStage,
+        status: asDraftOnly ? 'draft' : 'published',
+        launch_url: launchUrl,
+        website_url: formData.website_url.trim() || null,
+        demo_url: formData.demo_url.trim() || null,
+        github_url: formData.github_url.trim() || null,
+        app_store_url: formData.app_store_url.trim() || null,
+        play_store_url: formData.play_store_url.trim() || null,
+        has_live_product: Boolean(formData.has_live_product || formData.website_url || formData.demo_url),
+        features: cleanFeatures,
+        tags: formData.tags_text.split(',').map(s => s.trim()).filter(Boolean),
+        cover_image: formData.cover_image.trim() || null,
+        is_public: !asDraftOnly,
+        asDraftOnly
+      };
+
       let savedProject = null;
 
       if (selectedInnoId) {
         const updateRes = await SupabaseService.updateProject(selectedInnoId, projectPayload, effectiveUser.id);
-        savedProject = updateRes.data;
         if (updateRes.error) {
-          console.error("Project update failed:", updateRes.error);
+          console.error("[PROJECT UPDATE ERROR]", updateRes.error);
           showToast(updateRes.error.message || 'Failed to update project.', 'error');
           setIsSubmitting(false);
           return;
         }
+        savedProject = updateRes.data;
       } else {
-        // Direct single-operation frontend insert to Supabase projects table
-        const selectedCategoryId = formData.category_id || selectedCategoryId;
-        const projectType = (formData.projectType || creationTrack).toLowerCase();
-        const projectDesc = formData.description || desc;
-        const projectLaunchUrl = formData.launchUrl || launchUrl;
-        const projectStatus = asDraftOnly ? "draft" : "published";
-
-        // 1. Validate category_id is a valid UUID
-        const isUUID = (str) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
-        if (!selectedCategoryId || !isUUID(selectedCategoryId)) {
-          console.error("Project creation failed - invalid category_id:", selectedCategoryId);
-          showToast('Please select a valid domain category.', 'error');
+        const createRes = await SupabaseService.createProject(projectPayload, effectiveUser);
+        if (createRes.error || !createRes.data?.id) {
+          console.error("[PROJECT INSERT ERROR]", createRes.error);
+          showToast(createRes.error?.message || 'Failed to submit project. Please try again.', 'error');
           setIsSubmitting(false);
           return;
         }
 
-        // 2. Validate project_type constraint: idea | product | startup
-        const allowedProjectTypes = ['idea', 'product', 'startup'];
-        if (!allowedProjectTypes.includes(projectType)) {
-          console.error("Project creation failed - invalid project_type:", projectType);
-          showToast(`Invalid project type '${projectType}'. Must be idea, product, or startup.`, 'error');
-          setIsSubmitting(false);
-          return;
-        }
-
-        // 3. Validate status constraint: draft | review | published
-        const allowedStatuses = ['draft', 'review', 'published'];
-        if (!allowedStatuses.includes(projectStatus)) {
-          console.error("Project creation failed - invalid status:", projectStatus);
-          showToast(`Invalid project status '${projectStatus}'. Must be draft, review, or published.`, 'error');
-          setIsSubmitting(false);
-          return;
-        }
-
-        const { data: project, error } = await supabase
-          .from("projects")
-          .insert({
-            user_id: effectiveUser.id,
-            category_id: selectedCategoryId,
-            title: cleanProjectTitle(formData.title.trim()),
-            description: projectDesc,
-            project_type: projectType,
-            launch_url: projectLaunchUrl || null,
-            status: projectStatus
-          })
-          .select(`
-            *,
-            categories (
-              id,
-              name,
-              slug
-            ),
-            profiles (
-              id,
-              full_name,
-              avatar_url
-            )
-          `)
-          .single();
-
-        if (error) {
-          console.error("Project creation failed:", error);
-          showToast(error.message || 'Failed to save project. Please try again.', 'error');
-          setIsSubmitting(false);
-          return;
-        }
-
-        console.log("Project created successfully:", project);
-        savedProject = project;
-
-        // Cache item with rich UI metadata for 0ms rendering
-        const fullCachedItem = {
-          ...projectPayload,
-          ...project,
-          id: project.id,
-          project_id: project.id,
-          user_id: effectiveUser.id,
-          creator_id: effectiveUser.id,
-          creator_name: effectiveUser.name || effectiveUser.full_name || 'Innovator',
-          creator_avatar: effectiveUser.avatar || effectiveUser.avatar_url || '',
-          category_name: project.categories?.name || catObj?.name || 'Uncategorized'
-        };
-        StorageService.addInnovation(fullCachedItem);
-        window.dispatchEvent(new CustomEvent('innovexa:datachange'));
+        savedProject = createRes.data;
+        console.log("[PROJECT CREATED SUCCESSFULLY IN SUPABASE]:", savedProject);
       }
 
       localStorage.removeItem(DRAFT_STORAGE_KEY);
@@ -637,7 +715,7 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
         }
       }
     } catch (err) {
-      console.error('Startup creation failed:', err);
+      console.error('[PROJECT SUBMISSION EXCEPTION]:', err);
       showToast(err.message || 'Unexpected error saving project.', 'error');
     } finally {
       setIsSubmitting(false);
@@ -706,9 +784,11 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                 CHOOSE CREATION TRACK:
               </div>
               {[
-                { id: 'STARTUP', label: '1. NEW STARTUP', desc: 'Market & Stage (Idea to Live)', icon: Rocket, color: 'var(--apricot)' },
-                { id: 'PRODUCT', label: '2. NEW PRODUCT', desc: 'Features & Demo (Optional links)', icon: Box, color: 'var(--periwinkle)' },
-                { id: 'IDEA', label: '3. NEW IDEA', desc: 'Concept / Hypothesis (No link needed)', icon: Lightbulb, color: 'var(--coral)' }
+                { id: 'STARTUP', label: '1. STARTUP', desc: 'Venture & Market Opportunity', icon: Rocket, color: 'var(--apricot)' },
+                { id: 'PRODUCT', label: '2. PRODUCT', desc: 'App, Platform or Software Tool', icon: Box, color: 'var(--periwinkle)' },
+                { id: 'IDEA', label: '3. IDEA', desc: 'Concept Hypothesis (No links needed)', icon: Lightbulb, color: 'var(--coral)' },
+                { id: 'PROTOTYPE', label: '4. PROTOTYPE', desc: 'Working Prototype or MVP Specimen', icon: Sparkles, color: 'var(--teal)' },
+                { id: 'RESEARCH', label: '5. RESEARCH', desc: 'Academic / Scientific Research', icon: ShieldCheck, color: 'var(--lavender)' }
               ].map(t => {
                 const Icon = t.icon;
                 const isSelected = creationTrack === t.id;
@@ -806,18 +886,40 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                 <span>{isAnalyzing ? 'ANALYZING...' : '✦ ANALYZE WITH AI'}</span>
               </button>
 
-              <div style={{ display: 'flex', gap: '0.4rem' }}>
-                {[1, 2, 3].map(s => (
-                  <div
-                    key={s}
-                    style={{
-                      width: '42px',
-                      height: '4px',
-                      borderRadius: 'var(--radius-full)',
-                      backgroundColor: step >= s ? 'var(--coral)' : 'rgba(36, 36, 43, 0.12)',
-                      transition: 'background-color 0.2s ease'
+              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                {[
+                  { num: 1, label: '01 Overview' },
+                  { num: 2, label: '02 Details' },
+                  { num: 3, label: '03 Review' }
+                ].map(s => (
+                  <button
+                    key={s.num}
+                    type="button"
+                    onClick={() => {
+                      if (s.num === 2 && !formData.title.trim()) {
+                        formData.title = `Untitled ${creationTrack}`;
+                      }
+                      if (s.num === 3 && !formData.proposed_solution.trim()) {
+                        formData.proposed_solution = formData.short_description || formData.problem_statement || 'Solution under active formulation.';
+                      }
+                      setStep(s.num);
                     }}
-                  />
+                    title={`Jump to Step ${s.num}`}
+                    style={{
+                      padding: '0.2rem 0.55rem',
+                      borderRadius: 'var(--radius-sm)',
+                      backgroundColor: step === s.num ? 'var(--coral)' : step > s.num ? 'rgba(231, 111, 130, 0.2)' : 'rgba(36, 36, 43, 0.08)',
+                      color: step === s.num ? '#FFFFFF' : step > s.num ? 'var(--coral)' : 'var(--text-secondary)',
+                      fontSize: '0.72rem',
+                      fontFamily: 'var(--font-mono)',
+                      fontWeight: 700,
+                      border: 'none',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {s.label}
+                  </button>
                 ))}
               </div>
             </div>
@@ -850,7 +952,20 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
               </div>
 
               <div className="form-group">
-                <label className="form-label">DISCIPLINE / DOMAIN CATEGORY</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <label className="form-label" style={{ marginBottom: 0 }}>DISCIPLINE / DOMAIN CATEGORY</label>
+                  <button
+                    type="button"
+                    onClick={handleRecommendCategory}
+                    disabled={isRecommendingCategory || (!formData.title.trim() && !formData.problem_statement.trim())}
+                    className="btn btn-ghost btn-sm"
+                    style={{ color: 'var(--coral)', fontSize: '0.74rem', padding: '0.15rem 0.55rem', gap: '0.3rem', fontWeight: 700, border: '1px solid rgba(231, 111, 130, 0.3)', backgroundColor: 'rgba(231, 111, 130, 0.05)' }}
+                    title="Let AI classify and select the best domain from public.categories"
+                  >
+                    <Sparkles size={12} /> {isRecommendingCategory ? 'MATCHING CATEGORY...' : '✦ AI SUGGEST CATEGORY'}
+                  </button>
+                </div>
+
                 <select
                   value={selectedCategoryId || formData.category_id || ''}
                   onChange={(e) => {
@@ -868,6 +983,14 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                     </option>
                   ))}
                 </select>
+
+                {categoryRecommendationResult && (
+                  <div style={{ marginTop: '0.45rem', padding: '0.5rem 0.75rem', backgroundColor: 'rgba(231, 111, 130, 0.08)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(231, 111, 130, 0.25)', fontSize: '0.78rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.4rem' }}>
+                    <span>
+                      <strong style={{ color: 'var(--coral)' }}>AI MATCH:</strong> {categoryRecommendationResult.recommended_category.name} ({categoryRecommendationResult.confidence}% confidence) — {categoryRecommendationResult.reason}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="form-group">
@@ -876,13 +999,24 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                     {creationTrack === 'IDEA' ? 'PROBLEM STATEMENT' : creationTrack === 'PRODUCT' ? 'PROBLEM SOLVED BY THIS PRODUCT' : 'PROBLEM BEING SOLVED'}
                   </label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    {/* Phase 6 AI Feature: Idea Validation Trigger */}
+                    <button
+                      type="button"
+                      onClick={handleValidateIdea}
+                      disabled={isValidatingIdea || (!formData.title.trim() && !formData.problem_statement.trim())}
+                      className="btn btn-secondary btn-sm"
+                      style={{ color: 'var(--coral)', fontSize: '0.74rem', padding: '0.2rem 0.6rem', gap: '0.3rem', fontWeight: 700 }}
+                    >
+                      <Sparkles size={12} /> {isValidatingIdea ? 'VALIDATING...' : '✦ VALIDATE IDEA'}
+                    </button>
+
                     {/* Problem Detection Agent Trigger */}
                     <button
                       type="button"
                       onClick={handleAnalyzeProblemAgent}
                       disabled={isAnalyzingProblem || (!formData.title.trim() && !formData.problem_statement.trim())}
                       className="btn btn-secondary btn-sm"
-                      style={{ color: 'var(--coral)', fontSize: '0.74rem', padding: '0.2rem 0.6rem', gap: '0.3rem', fontWeight: 700 }}
+                      style={{ color: 'var(--periwinkle)', fontSize: '0.74rem', padding: '0.2rem 0.6rem', gap: '0.3rem', fontWeight: 700 }}
                     >
                       <Sparkles size={12} /> {isAnalyzingProblem ? 'ANALYZING PROBLEM...' : '✦ ANALYZE PROBLEM'}
                     </button>
@@ -893,9 +1027,9 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                       onClick={handleRunResearchAgent}
                       disabled={isResearching || (!formData.title.trim() && !formData.problem_statement.trim())}
                       className="btn btn-secondary btn-sm"
-                      style={{ color: 'var(--periwinkle)', fontSize: '0.74rem', padding: '0.2rem 0.6rem', gap: '0.3rem', fontWeight: 700 }}
+                      style={{ color: 'var(--teal)', fontSize: '0.74rem', padding: '0.2rem 0.6rem', gap: '0.3rem', fontWeight: 700 }}
                     >
-                      <Search size={12} /> {isResearching ? 'RESEARCHING...' : '✦ RESEARCH INNOVATION'}
+                      <Search size={12} /> {isResearching ? 'RESEARCHING...' : '✦ RESEARCH'}
                     </button>
 
                     <span className="mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
@@ -1112,10 +1246,11 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '0.65rem' }}>
                       {[
                         { id: 'idea', label: 'IDEA', color: 'var(--coral)' },
+                        { id: 'concept', label: 'CONCEPT', color: 'var(--lavender)' },
                         { id: 'prototype', label: 'PROTOTYPE', color: '#F59E0B' },
-                        { id: 'mvp', label: 'MVP', color: '#3B82F6' },
-                        { id: 'beta', label: 'BETA', color: '#8B5CF6' },
-                        { id: 'live', label: 'LIVE', color: '#10B981' }
+                        { id: 'development', label: 'DEV', color: 'var(--periwinkle)' },
+                        { id: 'testing', label: 'TESTING', color: '#8B5CF6' },
+                        { id: 'launched', label: 'LAUNCHED', color: '#10B981' }
                       ].map(st => {
                         const isSel = formData.startup_stage === st.id;
                         return (
@@ -1318,13 +1453,133 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                 </>
               )}
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2.5rem' }}>
+              {/* PROTOTYPE TRACK STEP 2 */}
+              {creationTrack === 'PROTOTYPE' && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">PROTOTYPE ARCHITECTURE & SOLUTION</label>
+                    <textarea
+                      value={formData.proposed_solution}
+                      onChange={e => updateFormField('proposed_solution', e.target.value)}
+                      placeholder="Explain what the working prototype proves and its core technological mechanism..."
+                      className="form-textarea"
+                      rows={3}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">TARGET USERS / BETA TESTERS</label>
+                    <input
+                      type="text"
+                      value={formData.target_users}
+                      onChange={e => updateFormField('target_users', e.target.value)}
+                      placeholder="e.g. Beta developers, early technical evaluators"
+                      className="form-input"
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">ONE-LINE SUMMARY</label>
+                    <input
+                      type="text"
+                      value={formData.short_description}
+                      onChange={e => updateFormField('short_description', e.target.value)}
+                      placeholder="e.g. Working demonstration of real-time peer neural sync."
+                      className="form-input"
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', backgroundColor: 'var(--bg-cream)', padding: '1.5rem', borderRadius: 'var(--radius-md)', marginBottom: '1rem' }}>
+                    <div className="editorial-mono-label" style={{ color: 'var(--green)', fontSize: '0.72rem' }}>PROTOTYPE ACCESS / CODE LINKS</div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label"><Play size={13} /> DEMO URL</label>
+                      <input
+                        type="text"
+                        value={formData.demo_url}
+                        onChange={e => updateFormField('demo_url', e.target.value)}
+                        placeholder="https://demo.example.com"
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label"><Code2 size={13} /> GITHUB / REPO URL</label>
+                      <input
+                        type="text"
+                        value={formData.github_url}
+                        onChange={e => updateFormField('github_url', e.target.value)}
+                        placeholder="https://github.com/org/repo"
+                        className="form-input"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* RESEARCH TRACK STEP 2 */}
+              {creationTrack === 'RESEARCH' && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">RESEARCH METHODOLOGY & PROPOSED SOLUTION</label>
+                    <textarea
+                      value={formData.proposed_solution}
+                      onChange={e => updateFormField('proposed_solution', e.target.value)}
+                      placeholder="Describe the research hypothesis, experimental design, and preliminary conclusions..."
+                      className="form-textarea"
+                      rows={4}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">TARGET BENEFICIARIES / ACADEMIC & INDUSTRY DOMAIN</label>
+                    <input
+                      type="text"
+                      value={formData.target_users}
+                      onChange={e => updateFormField('target_users', e.target.value)}
+                      placeholder="e.g. ML researchers, climate scientists, medical institutions"
+                      className="form-input"
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">ABSTRACT / SUMMARY</label>
+                    <input
+                      type="text"
+                      value={formData.short_description}
+                      onChange={e => updateFormField('short_description', e.target.value)}
+                      placeholder="e.g. Novel mathematical framework for low-latency decentralized consensus."
+                      className="form-input"
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label"><Globe size={13} /> PAPER / PREPRINT / REPO URL</label>
+                    <input
+                      type="text"
+                      value={formData.website_url}
+                      onChange={e => updateFormField('website_url', e.target.value)}
+                      placeholder="https://arxiv.org/abs/... or https://paper.org"
+                      className="form-input"
+                    />
+                  </div>
+                </>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
                 <button type="button" onClick={() => setStep(1)} className="btn btn-secondary">
                   <ArrowLeft size={15} /> Back
                 </button>
-                <button type="submit" className="btn btn-primary btn-lg" style={{ gap: '0.5rem' }}>
-                  NEXT STEP <ArrowRight size={16} />
-                </button>
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button type="button" onClick={handleSaveDraftManual} className="btn btn-secondary">
+                    <Save size={15} /> SAVE DRAFT
+                  </button>
+                  <button type="submit" className="btn btn-primary btn-lg" style={{ gap: '0.5rem' }}>
+                    NEXT STEP <ArrowRight size={16} />
+                  </button>
+                </div>
               </div>
             </form>
           )}
@@ -1337,7 +1592,7 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                   STEP 03 / REVIEW & SUBMISSION
                 </div>
                 <h2 style={{ fontSize: '1.85rem' }}>
-                  {creationTrack === 'STARTUP' ? 'Verify & Launch Your Startup' : creationTrack === 'PRODUCT' ? 'Review & Launch Product' : 'Review & Publish Idea'}
+                  {creationTrack === 'STARTUP' ? 'Verify & Launch Your Startup' : creationTrack === 'PRODUCT' ? 'Review & Launch Product' : creationTrack === 'PROTOTYPE' ? 'Review & Publish Prototype' : creationTrack === 'RESEARCH' ? 'Review & Publish Research' : 'Review & Publish Idea'}
                 </h2>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem' }}>
                   Review all details below before registering into the community validation network.
@@ -1362,7 +1617,7 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', borderBottom: '1px solid var(--border-hairline)', paddingBottom: '1rem' }}>
                   <div>
                     <div className="editorial-mono-label" style={{ color: 'var(--coral)', fontSize: '0.7rem' }}>
-                      {creationTrack === 'STARTUP' ? 'STARTUP TITLE' : 'PROJECT TITLE'}
+                      {creationTrack === 'STARTUP' ? 'STARTUP TITLE' : creationTrack === 'PRODUCT' ? 'PRODUCT NAME' : 'PROJECT TITLE'}
                     </div>
                     <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '0.2rem' }}>
                       {formData.title || '(No title entered)'}
@@ -1512,7 +1767,7 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                     className="btn btn-coral btn-lg"
                     style={{ gap: '0.5rem', fontWeight: 800, opacity: isSubmitting ? 0.7 : 1 }}
                   >
-                    {isSubmitting ? 'CREATING STARTUP...' : (creationTrack === 'STARTUP' ? 'CREATE STARTUP ↗' : 'SUBMIT FOR VALIDATION')} 
+                    {isSubmitting ? `SUBMITTING ${creationTrack}...` : (creationTrack === 'IDEA' ? 'SUBMIT IDEA FOR VALIDATION' : creationTrack === 'STARTUP' ? 'CREATE STARTUP ↗' : creationTrack === 'PRODUCT' ? 'CREATE PRODUCT ↗' : 'SUBMIT FOR VALIDATION')} 
                     <CheckCircle2 size={17} />
                   </button>
                 </div>
@@ -1934,6 +2189,211 @@ export default function SubmitInnovationPage({ setActiveTab, setSelectedInnoId, 
                     className="btn btn-secondary btn-sm"
                   >
                     Done
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* ================= 4. AI IDEA VALIDATION MODAL ================= */}
+      {showIdeaValidationModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1.5rem',
+            animation: 'fadeIn 0.2s ease-out'
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowIdeaValidationModal(false);
+          }}
+        >
+          <div
+            className="editorial-card"
+            style={{
+              backgroundColor: 'var(--bg-white)',
+              maxWidth: '820px',
+              width: '100%',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              padding: '2.5rem',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-modal)',
+              border: '1px solid var(--border-medium)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-hairline)', paddingBottom: '1rem' }}>
+              <div>
+                <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                  <Sparkles size={14} /> 4. AI IDEA VALIDATION REPORT
+                </div>
+                <h3 style={{ fontSize: '1.6rem', fontWeight: 800, margin: 0 }}>
+                  Pre-Submission Venture Validation
+                </h3>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowIdeaValidationModal(false)}
+                className="btn btn-ghost btn-sm"
+                style={{ fontSize: '1.2rem', padding: '0.2rem 0.6rem' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {isValidatingIdea ? (
+              <div style={{ padding: '4rem', textAlign: 'center' }}>
+                <div className="animate-spin" style={{ width: '36px', height: '36px', border: '3px solid var(--border-subtle)', borderTopColor: 'var(--coral)', borderRadius: '50%', margin: '0 auto 1.25rem auto' }} />
+                <h4 style={{ fontSize: '1.3rem', marginBottom: '0.35rem' }}>Validating Concept with AI...</h4>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', maxWidth: '460px', margin: '0 auto' }}>
+                  Evaluating problem severity, solution viability, uniqueness, market demand, competitor landscape, and execution risks.
+                </p>
+              </div>
+            ) : ideaValidationResult ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+                {/* Verdict Banner */}
+                {ideaValidationResult.validation_verdict && (
+                  <div
+                    style={{
+                      padding: '1.5rem',
+                      borderRadius: 'var(--radius-md)',
+                      backgroundColor: 'var(--bg-dark)',
+                      color: '#FFFFFF',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '1.25rem'
+                    }}
+                  >
+                    <div>
+                      <div className="editorial-mono-label" style={{ color: 'var(--coral)', fontSize: '0.7rem', marginBottom: '0.25rem' }}>
+                        VALIDATION VERDICT
+                      </div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 800, color: '#FFFFFF' }}>
+                        {ideaValidationResult.validation_verdict.status}
+                      </div>
+                      <p style={{ color: 'var(--text-inverse-muted)', fontSize: '0.86rem', margin: '0.35rem 0 0 0' }}>
+                        {ideaValidationResult.validation_verdict.recommendation}
+                      </p>
+                    </div>
+
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.8rem', fontWeight: 800, color: 'var(--coral)', lineHeight: 1 }}>
+                        {ideaValidationResult.validation_verdict.overall_score}<span style={{ fontSize: '1rem', color: 'rgba(255,255,255,0.6)' }}>/100</span>
+                      </div>
+                      <div className="mono" style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.7)' }}>
+                        Validation Score
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Criteria Scores Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+                  <div style={{ backgroundColor: 'var(--bg-cream)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                      <span className="editorial-mono-label" style={{ color: 'var(--coral)', fontSize: '0.68rem' }}>PROBLEM SEVERITY</span>
+                      <strong>{ideaValidationResult.problem?.score || 85}/100</strong>
+                    </div>
+                    <p style={{ fontSize: '0.84rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.45 }}>
+                      {ideaValidationResult.problem?.analysis}
+                    </p>
+                  </div>
+
+                  <div style={{ backgroundColor: 'var(--bg-cream)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                      <span className="editorial-mono-label" style={{ color: 'var(--teal)', fontSize: '0.68rem' }}>SOLUTION VIABILITY</span>
+                      <strong>{ideaValidationResult.solution?.score || 85}/100</strong>
+                    </div>
+                    <p style={{ fontSize: '0.84rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.45 }}>
+                      {ideaValidationResult.solution?.analysis}
+                    </p>
+                  </div>
+
+                  <div style={{ backgroundColor: 'var(--bg-cream)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                      <span className="editorial-mono-label" style={{ color: 'var(--periwinkle)', fontSize: '0.68rem' }}>UNIQUENESS</span>
+                      <strong>{ideaValidationResult.uniqueness?.score || 80}/100</strong>
+                    </div>
+                    <p style={{ fontSize: '0.84rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.45 }}>
+                      {ideaValidationResult.uniqueness?.analysis}
+                    </p>
+                  </div>
+
+                  <div style={{ backgroundColor: 'var(--bg-cream)', padding: '1rem', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                      <span className="editorial-mono-label" style={{ color: 'var(--green)', fontSize: '0.68rem' }}>FEASIBILITY</span>
+                      <strong>{ideaValidationResult.feasibility?.score || 85}/100</strong>
+                    </div>
+                    <p style={{ fontSize: '0.84rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.45 }}>
+                      {ideaValidationResult.feasibility?.analysis}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Possible Competitors */}
+                {ideaValidationResult.possible_competitors?.length > 0 && (
+                  <div>
+                    <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '0.65rem', fontSize: '0.72rem' }}>
+                      POSSIBLE COMPETITORS & DIFFERENTIATION
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                      {ideaValidationResult.possible_competitors.map((comp, idx) => (
+                        <div key={idx} style={{ padding: '0.85rem 1rem', backgroundColor: 'var(--bg-cream)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--coral)' }}>
+                          <strong style={{ fontSize: '0.92rem', display: 'block', marginBottom: '0.2rem' }}>{comp.name}</strong>
+                          <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.2rem' }}>Approach: {comp.comparison}</div>
+                          <div style={{ fontSize: '0.84rem', color: 'var(--text-primary)' }}>Your Advantage: <strong>{comp.differentiator}</strong></div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Risks and Mitigations */}
+                {ideaValidationResult.risks?.length > 0 && (
+                  <div>
+                    <div className="editorial-mono-label" style={{ color: 'var(--lavender)', marginBottom: '0.65rem', fontSize: '0.72rem' }}>
+                      IDENTIFIED RISKS & MITIGATION STRATEGIES
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                      {ideaValidationResult.risks.map((r, idx) => (
+                        <div key={idx} style={{ padding: '0.75rem 1rem', backgroundColor: 'var(--bg-cream)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--lavender)', fontSize: '0.84rem' }}>
+                          <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.2rem' }}>
+                            ⚠ {r.risk} ({r.impact} Impact)
+                          </div>
+                          <div style={{ color: 'var(--text-secondary)' }}>Mitigation: {r.mitigation}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', borderTop: '1px solid var(--border-subtle)', paddingTop: '1rem' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowIdeaValidationModal(false)}
+                    className="btn btn-secondary btn-sm"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowIdeaValidationModal(false);
+                      setStep(2);
+                    }}
+                    className="btn btn-coral btn-sm"
+                  >
+                    Proceed to Step 2 ↗
                   </button>
                 </div>
               </div>

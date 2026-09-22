@@ -37,7 +37,8 @@ import {
   FolderKanban,
   Check,
   TrendingDown,
-  LineChart
+  LineChart,
+  AlertCircle
 } from 'lucide-react';
 
 /**
@@ -47,7 +48,7 @@ export default function InsightsPage({ setActiveTab, setSelectedInnoId, selected
   const { currentUser } = useAuth();
   const [insightsData, setInsightsData] = useState(null);
   const [userProjects, setUserProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState(null);
+  const [activeProjectId, setActiveProjectId] = useState(selectedInnoId || null);
   const [activeProjectInsights, setActiveProjectInsights] = useState(null);
   const [activeProjectReviews, setActiveProjectReviews] = useState([]);
   const [allProjects, setAllProjects] = useState([]);
@@ -56,18 +57,25 @@ export default function InsightsPage({ setActiveTab, setSelectedInnoId, selected
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
 
-  const loadData = async () => {
-    setIsLoading(true);
+  const insightsCacheRef = useRef(new Map());
+  const reqCountRef = useRef(0);
+  const activeProjectIdRef = useRef(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
+
+  const loadData = async (isInitial = false) => {
+    if (isInitial) {
+      setIsLoading(true);
+    }
     setLoadError(null);
     try {
       // 1. Fetch user projects and all platform resources in parallel
       const [userProjsRes, allProjsRes, revsRes] = await Promise.all([
-        currentUser ? SupabaseService.getUserProjects(currentUser.id) : Promise.resolve({ data: [] }),
+        currentUser?.id ? SupabaseService.getUserProjects(currentUser.id) : Promise.resolve({ data: [] }),
         SupabaseService.getProjects(),
         SupabaseService.getReviews()
       ]);
 
-      const myProjs = userProjsRes.data || (currentUser ? StorageService.getInnovationsByUserId(currentUser.id) : []) || [];
+      const myProjs = userProjsRes.data || (currentUser?.id ? StorageService.getInnovationsByUserId(currentUser.id) : []) || [];
       const allProjs = allProjsRes.data || StorageService.getInnovations() || [];
 
       setUserProjects(myProjs);
@@ -80,11 +88,11 @@ export default function InsightsPage({ setActiveTab, setSelectedInnoId, selected
       // 2. Determine target project for deep AI insight view
       const combined = [...myProjs, ...allProjs.filter(p => !myProjs.some(m => m.id === p.id))];
       let targetProj = null;
-      if (activeProjectId) {
-        targetProj = combined.find(p => p.id === activeProjectId);
-      }
-      if (!targetProj && selectedInnoId) {
+      if (selectedInnoId) {
         targetProj = combined.find(p => p.id === selectedInnoId);
+      }
+      if (!targetProj && activeProjectIdRef.current) {
+        targetProj = combined.find(p => p.id === activeProjectIdRef.current);
       }
       if (!targetProj) {
         targetProj = myProjs.length > 0 ? myProjs[0] : (allProjs.length > 0 ? allProjs[0] : null);
@@ -92,13 +100,19 @@ export default function InsightsPage({ setActiveTab, setSelectedInnoId, selected
 
       if (targetProj) {
         setActiveProjectId(targetProj.id);
-        const pRevsRes = await SupabaseService.getReviews(targetProj.id);
-        const pReviews = pRevsRes.data || StorageService.getReviewsForInnovation(targetProj.id) || [];
-        setActiveProjectReviews(pReviews);
+        if (insightsCacheRef.current.has(targetProj.id)) {
+          const cached = insightsCacheRef.current.get(targetProj.id);
+          setActiveProjectReviews(cached.reviews || []);
+          setActiveProjectInsights(cached.insights || null);
+        } else {
+          const pRevsRes = await SupabaseService.getReviews(targetProj.id);
+          const pReviews = pRevsRes.data || StorageService.getReviewsForInnovation(targetProj.id) || [];
+          setActiveProjectReviews(pReviews);
 
-        // Generate full personal AI insights based directly on the project's own information
-        const pInsights = await generateFeedbackInsights(targetProj, pReviews);
-        setActiveProjectInsights(pInsights);
+          const pInsights = await generateFeedbackInsights(targetProj, pReviews);
+          insightsCacheRef.current.set(targetProj.id, { reviews: pReviews, insights: pInsights });
+          setActiveProjectInsights(pInsights);
+        }
       } else {
         setActiveProjectInsights(null);
         setActiveProjectReviews([]);
@@ -165,28 +179,47 @@ export default function InsightsPage({ setActiveTab, setSelectedInnoId, selected
         }
       });
     } finally {
-      setIsLoading(false);
+      if (isInitial) {
+        setIsLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    loadData();
-    const handler = () => loadData();
+    loadData(true);
+    const handler = () => loadData(false);
     window.addEventListener('innovexa:datachange', handler);
     return () => window.removeEventListener('innovexa:datachange', handler);
-  }, [currentUser, activeProjectId]);
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (selectedInnoId && selectedInnoId !== activeProjectId) {
+      setActiveProjectId(selectedInnoId);
+    }
+  }, [selectedInnoId]);
 
   const handleSelectProject = async (proj, forceRefresh = false) => {
     if (!proj) return;
     setActiveProjectId(proj.id);
-    if (setSelectedInnoId) {
+    if (setSelectedInnoId && selectedInnoId !== proj.id) {
       setSelectedInnoId(proj.id);
     }
-    setActiveProjectInsights(null); // Clear stale insight immediately while loading
+
+    if (!forceRefresh && insightsCacheRef.current.has(proj.id)) {
+      const cached = insightsCacheRef.current.get(proj.id);
+      setActiveProjectReviews(cached.reviews || []);
+      setActiveProjectInsights(cached.insights || null);
+      return;
+    }
+
+    const currentReq = ++reqCountRef.current;
     const revsRes = await SupabaseService.getReviews(proj.id);
+    if (currentReq !== reqCountRef.current) return;
     const pReviews = revsRes.data || StorageService.getReviewsForInnovation(proj.id) || [];
     setActiveProjectReviews(pReviews);
     const pInsights = await generateFeedbackInsights(proj, pReviews, forceRefresh);
+    if (currentReq !== reqCountRef.current) return;
+    insightsCacheRef.current.set(proj.id, { reviews: pReviews, insights: pInsights });
     setActiveProjectInsights(pInsights);
   };
 

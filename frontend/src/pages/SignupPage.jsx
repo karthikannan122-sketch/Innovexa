@@ -1,309 +1,214 @@
-import React, { useState, useRef } from 'react';
+﻿import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
-import { ArrowUpRight, ArrowRight, ShieldCheck, Sparkles, CheckCircle2, AlertCircle, Mail } from 'lucide-react';
+import { ArrowUpRight, Eye, EyeOff, ArrowLeft, Mail, Lock, User, AlertCircle } from 'lucide-react';
 
-/**
- * SignupPage — Create Account Flow connected to Supabase Authentication
- * Heading: START SOMETHING NEW.
- * Supporting: Your next idea, product, or startup starts with a conversation.
- * Fields: FULL NAME, EMAIL ADDRESS, PASSWORD, CONFIRM PASSWORD, Terms checkbox
- * Button: CREATE MY ACCOUNT ↗
- * Link: Already part of INNOVEXA? SIGN IN ↗
- */
+const T = {
+  ivory:'#F7F4EE', cream:'#EEE9E0', white:'#FCFAF7', dark:'#171B2B',
+  coral:'#EA6678', blue:'#617BEA', teal:'#57B9AD', amber:'#E8B35B',
+  txtPri:'#171925', txtSec:'#5D6170', txtMut:'#9097A8',
+  borderH:'rgba(23,25,37,0.07)', borderS:'rgba(23,25,37,0.11)', borderM:'rgba(23,25,37,0.18)',
+  display:"'Instrument Serif','DM Serif Display',Georgia,serif",
+  ui:"'Manrope',-apple-system,sans-serif", mono:"'IBM Plex Mono','Courier New',monospace",
+};
+
 export default function SignupPage({ setActiveTab }) {
+  const navigate = useNavigate();
   const { signup, showToast } = useAuth();
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [showPw, setShowPw] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [confirmationNotice, setConfirmationNotice] = useState(false);
 
-  // Synchronous lock to prevent duplicate clicks and multi-submissions
-  const isSubmittingRef = useRef(false);
+  const go = (path, tab) => { if (navigate) navigate(path); else if (setActiveTab) setActiveTab(tab); };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (isSubmittingRef.current || isSubmitting) return;
-
     setErrorMessage('');
-
-    // 1. Full name is required
-    if (!fullName.trim()) {
-      const err = 'Full name is required.';
-      setErrorMessage(err);
-      showToast(err, 'warning');
-      return;
+    if (!fullName.trim() || !email.trim() || !password || !confirmPassword) {
+      const err = 'Please fill in all fields.';
+      setErrorMessage(err); showToast(err, 'warning'); return;
     }
-
-    // 2. Email is valid
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!email.trim() || !emailRegex.test(email.trim())) {
-      const err = 'Please provide a valid email address.';
-      setErrorMessage(err);
-      showToast(err, 'warning');
-      return;
-    }
-
-    // 3. Password is at least 6 characters
-    if (password.length < 6) {
-      const err = 'Password must be at least 6 characters long.';
-      setErrorMessage(err);
-      showToast(err, 'warning');
-      return;
-    }
-
-    // 4. Password and Confirm Password must match
     if (password !== confirmPassword) {
-      const err = 'Password and Confirm Password do not match.';
-      setErrorMessage(err);
-      showToast(err, 'warning');
-      return;
+      const err = 'Passwords do not match.';
+      setErrorMessage(err); showToast(err, 'warning'); return;
     }
-
-    // 5. Terms agreement
-    if (!agreedToTerms) {
-      const err = 'Please accept the Terms and Privacy Policy to continue.';
-      setErrorMessage(err);
-      showToast(err, 'warning');
-      return;
+    if (password.length < 8) {
+      const err = 'Password must be at least 8 characters.';
+      setErrorMessage(err); showToast(err, 'warning'); return;
     }
-
-    // Lock submission immediately to prevent duplicate requests
-    isSubmittingRef.current = true;
     setIsSubmitting(true);
-
     try {
-      const res = await signup({
-        name: fullName.trim(),
-        email: email.trim(),
-        password: password
-      });
-
+      const res = await signup({ email: email.trim(), password, fullName: fullName.trim() });
       if (res.success) {
-        if (res.emailConfirmationRequired) {
-          setConfirmationNotice(true);
-        } else {
-          // Direct transition to personalized onboarding
-          setActiveTab('onboarding');
-        }
+        showToast('Account created! Let\'s set up your profile.', 'success');
+        go('/onboarding', 'onboarding');
       } else {
-        setErrorMessage(res.error || 'Failed to create account. Please try again.');
+        const err = res.error || 'Could not create account. Please try again.';
+        setErrorMessage(err); showToast(err, 'error');
       }
-    } catch (err) {
-      setErrorMessage(err.message || 'An unexpected error occurred. Please try again.');
-    } finally {
-      isSubmittingRef.current = false;
-      setIsSubmitting(false);
-    }
+    } catch {
+      const err = 'Something went wrong. Please try again.';
+      setErrorMessage(err); showToast(err, 'error');
+    } finally { setIsSubmitting(false); }
   };
 
+  const fieldStyle = {
+    width:'100%', fontFamily:T.ui, fontSize:'0.9rem', color:T.txtPri,
+    backgroundColor:T.white, border:`1px solid ${T.borderS}`, borderRadius:'7px',
+    padding:'0.72rem 0.9rem 0.72rem 2.4rem', outline:'none', transition:'all 0.18s ease'
+  };
+  const labelStyle = { fontFamily:T.mono, fontSize:'0.68rem', letterSpacing:'0.09em', textTransform:'uppercase', color:T.txtPri, display:'block', marginBottom:'0.4rem' };
+  const handleFocus = e => { e.target.style.borderColor=T.coral; e.target.style.boxShadow='0 0 0 3px rgba(234,102,120,0.12)'; };
+  const handleBlur  = e => { e.target.style.borderColor=T.borderS; e.target.style.boxShadow='none'; };
+
   return (
-    <div style={{ minHeight: '88vh', display: 'flex', alignItems: 'center', backgroundColor: 'var(--bg-ivory)', padding: '3rem 0' }}>
-      <div className="workspace-container" style={{ maxWidth: '1080px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '4rem', alignItems: 'center' }}>
-          
-          {/* Left Column: Statement & Value Proposition */}
-          <div>
-            <div className="editorial-mono-label" style={{ color: 'var(--coral)', marginBottom: '1rem' }}>
-              01 / MEMBERSHIP REGISTRATION
-            </div>
+    <div style={{ minHeight:'100vh', backgroundColor:T.ivory, display:'grid', gridTemplateColumns:'1fr 1fr', fontFamily:T.ui }}>
 
-            {/* Exact Required Heading */}
-            <div style={{ lineHeight: 0.98, marginBottom: '2rem' }}>
-              <div style={{ fontFamily: 'var(--font-editorial)', fontSize: 'clamp(3.2rem, 6.5vw, 5.2rem)', fontWeight: 800, color: 'var(--text-primary)' }}>
-                START
-              </div>
-              <div style={{ fontFamily: 'var(--font-editorial)', fontSize: 'clamp(3.2rem, 6.5vw, 5.2rem)', fontWeight: 800, color: 'var(--coral)', fontStyle: 'italic', margin: '0.2rem 0' }}>
-                SOMETHING
-              </div>
-              <div style={{ fontFamily: 'var(--font-editorial)', fontSize: 'clamp(3.2rem, 6.5vw, 5.2rem)', fontWeight: 800, color: 'var(--text-primary)' }}>
-                NEW.
-              </div>
-            </div>
+      {/* Left — editorial panel */}
+      <motion.div
+        initial={{ opacity:0, x:-20 }} animate={{ opacity:1, x:0 }} transition={{ duration:0.65, ease:[0.16,1,0.3,1] }}
+        style={{ backgroundColor:T.dark, padding:'3rem', display:'flex', flexDirection:'column', position:'relative', overflow:'hidden', minHeight:'100vh' }}
+        className="hidden md:flex"
+      >
+        <div style={{ position:'absolute', bottom:'-1.5rem', right:'-1rem', fontFamily:T.display, fontStyle:'italic', fontSize:'clamp(10rem,18vw,22rem)', color:'rgba(255,255,255,0.025)', letterSpacing:'-0.05em', lineHeight:1, userSelect:'none' }}>
+          IX
+        </div>
 
-            {/* Exact Supporting Text */}
-            <p className="editorial-lead" style={{ fontSize: '1.25rem', color: 'var(--text-secondary)', marginBottom: '2.5rem' }}>
-              Your next idea, product, or startup starts with a conversation.
-            </p>
+        <div style={{ display:'flex', alignItems:'baseline', gap:'0.4rem', marginBottom:'auto' }}>
+          <span style={{ fontFamily:T.mono, fontSize:'0.6rem', color:T.coral }}>✦</span>
+          <span style={{ fontFamily:T.display, fontSize:'1.25rem', color:'#FFFFFF', letterSpacing:'-0.02em' }}>INNOVEXA</span>
+        </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.85rem' }}>
-                <span style={{ color: 'var(--coral)', marginTop: '0.15rem' }}>✦</span>
-                <span style={{ fontSize: '0.94rem', color: 'var(--text-primary)' }}>
-                  <strong>Structured Critique:</strong> Rubric-driven evaluation without social noise.
-                </span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.85rem' }}>
-                <span style={{ color: 'var(--periwinkle)', marginTop: '0.15rem' }}>✦</span>
-                <span style={{ fontSize: '0.94rem', color: 'var(--text-primary)' }}>
-                  <strong>Fluency Matching:</strong> Connect with validators matched to your problem space.
-                </span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.85rem' }}>
-                <span style={{ color: 'var(--green)', marginTop: '0.15rem' }}>✦</span>
-                <span style={{ fontSize: '0.94rem', color: 'var(--text-primary)' }}>
-                  <strong>Reputation Ledger:</strong> Earn credits as you review and refine peer innovations.
-                </span>
-              </div>
-            </div>
+        <div style={{ marginBottom:'auto', paddingTop:'4rem' }}>
+          <div style={{ fontFamily:T.mono, fontSize:'0.65rem', color:T.coral, letterSpacing:'0.12em', textTransform:'uppercase', marginBottom:'1.25rem' }}>
+            01 / JOIN THE NETWORK
           </div>
+          <h1 style={{ fontFamily:T.display, fontWeight:400, fontSize:'clamp(2.5rem,5vw,4.2rem)', color:'#FFFFFF', letterSpacing:'-0.025em', lineHeight:0.97, marginBottom:'1.25rem' }}>
+            JOIN<br/>THE<br/><span style={{ color:T.coral, fontStyle:'italic' }}>NETWORK.</span>
+          </h1>
+          <p style={{ fontFamily:T.ui, fontSize:'0.92rem', color:'rgba(255,255,255,0.48)', lineHeight:1.65, maxWidth:'340px' }}>
+            Create your place in a global community of innovators, validators, and builders.
+          </p>
+        </div>
 
-          {/* Right Column: Real Signup Form */}
-          <div className="editorial-card" style={{ padding: '3rem', backgroundColor: 'var(--bg-white)', borderLeft: '4px solid var(--coral)' }}>
-            <div style={{ marginBottom: '2rem' }}>
-              <h2 style={{ fontSize: '1.85rem', marginBottom: '0.4rem' }}>Create Account</h2>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem' }}>
-                Join the network to publish specimens, review innovations, and access consensus insights.
-              </p>
+        {/* Feature list */}
+        <div style={{ borderTop:'1px solid rgba(255,255,255,0.08)', paddingTop:'1.5rem', display:'flex', flexDirection:'column', gap:'0.65rem' }}>
+          {[
+            { dot:T.coral, text:'Structured innovation framework' },
+            { dot:T.teal, text:'Peer rubric review network' },
+            { dot:T.amber, text:'AI market analysis telemetry' },
+            { dot:T.blue, text:'Global discovery registry' },
+          ].map(({ dot, text }) => (
+            <div key={text} style={{ display:'flex', alignItems:'center', gap:'0.65rem' }}>
+              <div style={{ width:'6px', height:'6px', borderRadius:'50%', backgroundColor:dot, flexShrink:0 }} />
+              <span style={{ fontFamily:T.ui, fontSize:'0.84rem', color:'rgba(255,255,255,0.5)' }}>{text}</span>
             </div>
+          ))}
+        </div>
+      </motion.div>
 
-            {/* Email Confirmation Notice state */}
-            {confirmationNotice ? (
-              <div style={{ backgroundColor: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '2rem', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
-                <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.25rem auto' }}>
-                  <Mail size={24} />
-                </div>
-                <h3 style={{ fontSize: '1.4rem', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Account Created</h3>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem', lineHeight: 1.5, marginBottom: '1.5rem' }}>
-                  Your account was created. Please verify your email before signing in.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('login')}
-                  className="btn btn-primary"
-                  style={{ width: '100%', justifyContent: 'center' }}
-                >
-                  Proceed to Sign In ↗
-                </button>
-              </div>
-            ) : (
-              <div>
-                {/* Error Banner */}
-                {errorMessage && (
-                  <div style={{ backgroundColor: 'rgba(231, 111, 130, 0.1)', border: '1px solid rgba(231, 111, 130, 0.3)', padding: '0.85rem 1rem', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'flex-start', gap: '0.65rem', color: 'var(--red)', fontSize: '0.86rem', lineHeight: 1.45, marginBottom: '1.25rem' }}>
-                    <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '0.1rem' }} />
-                    <div>{errorMessage}</div>
-                  </div>
-                )}
+      {/* Right — form */}
+      <motion.div
+        initial={{ opacity:0, y:18 }} animate={{ opacity:1, y:0 }} transition={{ duration:0.6, delay:0.1, ease:[0.16,1,0.3,1] }}
+        style={{ display:'flex', flexDirection:'column', justifyContent:'center', padding:'3rem 2.5rem', minHeight:'100vh', backgroundColor:T.ivory }}
+      >
+        <div style={{ maxWidth:'400px', width:'100%', margin:'0 auto' }}>
+          <button onClick={() => go('/','landing')} style={{ display:'flex', alignItems:'center', gap:'0.4rem', fontFamily:T.mono, fontSize:'0.65rem', color:T.txtMut, letterSpacing:'0.08em', textTransform:'uppercase', background:'none', border:'none', cursor:'pointer', marginBottom:'2.5rem', transition:'color 0.15s ease' }}
+            onMouseEnter={e => e.currentTarget.style.color=T.txtSec}
+            onMouseLeave={e => e.currentTarget.style.color=T.txtMut}
+          ><ArrowLeft size={13}/> Back to home</button>
 
-                <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.35rem' }}>
+          <div style={{ fontFamily:T.mono, fontSize:'0.65rem', color:T.coral, letterSpacing:'0.12em', textTransform:'uppercase', marginBottom:'0.85rem' }}>Create Account</div>
+          <h2 style={{ fontFamily:T.display, fontSize:'clamp(1.9rem,3.5vw,2.6rem)', color:T.txtPri, letterSpacing:'-0.025em', lineHeight:1.05, marginBottom:'0.55rem' }}>
+            Start building today.
+          </h2>
+          <p style={{ fontFamily:T.ui, fontSize:'0.875rem', color:T.txtSec, lineHeight:1.6, marginBottom:'1.85rem' }}>
+            Already a member?{' '}
+            <button onClick={() => go('/login','login')} style={{ background:'none', border:'none', cursor:'pointer', fontFamily:T.ui, fontSize:'0.875rem', color:T.coral, fontWeight:600, textDecoration:'underline', textUnderlineOffset:'2px' }}>Sign in</button>
+          </p>
 
-                {/* FULL NAME */}
-                <div className="form-group">
-                  <label className="form-label">FULL NAME</label>
-                  <input
-                    type="text"
-                    value={fullName}
-                    onChange={e => {
-                      setFullName(e.target.value);
-                      if (errorMessage) setErrorMessage('');
-                    }}
-                    placeholder="e.g. Maya Lin"
-                    className="form-input"
-                    required
-                    disabled={isSubmitting}
-                  />
-                </div>
-
-                {/* EMAIL ADDRESS */}
-                <div className="form-group">
-                  <label className="form-label">EMAIL ADDRESS</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={e => {
-                      setEmail(e.target.value);
-                      if (errorMessage) setErrorMessage('');
-                    }}
-                    placeholder="name@organization.com"
-                    className="form-input"
-                    required
-                    disabled={isSubmitting}
-                  />
-                </div>
-
-                {/* PASSWORD */}
-                <div className="form-group">
-                  <label className="form-label">PASSWORD</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={e => {
-                      setPassword(e.target.value);
-                      if (errorMessage) setErrorMessage('');
-                    }}
-                    placeholder="••••••••"
-                    className="form-input"
-                    required
-                    minLength={6}
-                    disabled={isSubmitting}
-                  />
-                </div>
-
-                {/* CONFIRM PASSWORD */}
-                <div className="form-group">
-                  <label className="form-label">CONFIRM PASSWORD</label>
-                  <input
-                    type="password"
-                    value={confirmPassword}
-                    onChange={e => {
-                      setConfirmPassword(e.target.value);
-                      if (errorMessage) setErrorMessage('');
-                    }}
-                    placeholder="••••••••"
-                    className="form-input"
-                    required
-                    disabled={isSubmitting}
-                  />
-                </div>
-
-                {/* TERMS CHECKBOX */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', marginTop: '0.25rem' }}>
-                  <input
-                    type="checkbox"
-                    id="agreeTerms"
-                    checked={agreedToTerms}
-                    onChange={e => setAgreedToTerms(e.target.checked)}
-                    style={{ width: '16px', height: '16px', accentColor: 'var(--coral)', cursor: 'pointer' }}
-                    required
-                    disabled={isSubmitting}
-                  />
-                  <label htmlFor="agreeTerms" style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                    I agree to the <span style={{ textDecoration: 'underline', color: 'var(--text-primary)' }}>Terms</span> and <span style={{ textDecoration: 'underline', color: 'var(--text-primary)' }}>Privacy Policy</span>.
-                  </label>
-                </div>
-
-                {/* SUBMIT BUTTON */}
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="btn btn-coral btn-lg"
-                  style={{ width: '100%', marginTop: '0.75rem', gap: '0.5rem', opacity: isSubmitting ? 0.65 : 1, cursor: isSubmitting ? 'not-allowed' : 'pointer' }}
-                >
-                  {isSubmitting ? 'CREATING ACCOUNT...' : 'CREATE MY ACCOUNT ↗'}
-                </button>
-
-                {/* LINK TO SIGN IN */}
-                <div style={{ textAlign: 'center', marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-hairline)', fontSize: '0.88rem', color: 'var(--text-secondary)' }}>
-                  Already part of INNOVEXA?{' '}
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('login')}
-                    className="btn btn-ghost btn-sm"
-                    style={{ color: 'var(--coral)', fontWeight: 700, padding: '0.2rem 0.4rem' }}
-                  >
-                    SIGN IN ↗
-                  </button>
-                </div>
-              </form>
+          {errorMessage && (
+            <div style={{ display:'flex', alignItems:'center', gap:'0.6rem', padding:'0.8rem 1rem', backgroundColor:'#FEF0F2', border:'1px solid rgba(234,102,120,0.25)', borderRadius:'8px', marginBottom:'1.25rem' }}>
+              <AlertCircle size={15} color={T.coral} style={{ flexShrink:0 }}/>
+              <span style={{ fontFamily:T.ui, fontSize:'0.82rem', color:'#C03048' }}>{errorMessage}</span>
             </div>
           )}
+
+          <form onSubmit={handleSubmit} style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+            {/* Full Name */}
+            <div>
+              <label style={labelStyle}>Full Name</label>
+              <div style={{ position:'relative' }}>
+                <User size={15} color={T.txtMut} style={{ position:'absolute', left:'0.85rem', top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}/>
+                <input type="text" value={fullName} onChange={e => setFullName(e.target.value)} placeholder="Ada Lovelace" required style={fieldStyle} onFocus={handleFocus} onBlur={handleBlur}/>
+              </div>
+            </div>
+
+            {/* Email */}
+            <div>
+              <label style={labelStyle}>Email Address</label>
+              <div style={{ position:'relative' }}>
+                <Mail size={15} color={T.txtMut} style={{ position:'absolute', left:'0.85rem', top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}/>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="ada@example.com" required style={fieldStyle} onFocus={handleFocus} onBlur={handleBlur}/>
+              </div>
+            </div>
+
+            {/* Password */}
+            <div>
+              <label style={labelStyle}>Password</label>
+              <div style={{ position:'relative' }}>
+                <Lock size={15} color={T.txtMut} style={{ position:'absolute', left:'0.85rem', top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}/>
+                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 8 characters" required style={{ ...fieldStyle, paddingRight:'2.8rem' }} onFocus={handleFocus} onBlur={handleBlur}/>
+                <button type="button" onClick={() => setShowPw(p => !p)} style={{ position:'absolute', right:'0.85rem', top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:T.txtMut, display:'flex' }}>
+                  {showPw ? <EyeOff size={15}/> : <Eye size={15}/>}
+                </button>
+              </div>
+            </div>
+
+            {/* Confirm Password */}
+            <div>
+              <label style={labelStyle}>Confirm Password</label>
+              <div style={{ position:'relative' }}>
+                <Lock size={15} color={T.txtMut} style={{ position:'absolute', left:'0.85rem', top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}/>
+                <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Repeat password" required style={fieldStyle} onFocus={handleFocus} onBlur={handleBlur}/>
+              </div>
+            </div>
+
+            <motion.button
+              type="submit"
+              disabled={isSubmitting}
+              whileHover={!isSubmitting ? { scale:1.02, y:-1 } : {}}
+              whileTap={!isSubmitting ? { scale:0.98 } : {}}
+              style={{
+                width:'100%', fontFamily:T.ui, fontWeight:700, fontSize:'0.95rem',
+                backgroundColor: isSubmitting ? T.txtMut : T.coral,
+                color:'#fff', border:'none', borderRadius:'8px',
+                padding:'0.9rem 1.5rem', cursor: isSubmitting ? 'wait' : 'pointer',
+                display:'flex', alignItems:'center', justifyContent:'center', gap:'0.45rem',
+                boxShadow: isSubmitting ? 'none' : '0 4px 16px rgba(234,102,120,0.25)',
+                transition:'all 0.18s ease', marginTop:'0.2rem'
+              }}
+            >
+              {isSubmitting ? 'Creating account...' : <>CREATE ACCOUNT <ArrowUpRight size={15}/></>}
+            </motion.button>
+          </form>
+
+          <p style={{ textAlign:'center', marginTop:'1.25rem', fontFamily:T.ui, fontSize:'0.76rem', color:T.txtMut, lineHeight:1.5 }}>
+            By creating an account, you agree to our{' '}
+            <span style={{ color:T.txtSec, textDecoration:'underline', cursor:'pointer', textUnderlineOffset:'2px' }}>Terms of Service</span>{' '}and{' '}
+            <span style={{ color:T.txtSec, textDecoration:'underline', cursor:'pointer', textUnderlineOffset:'2px' }}>Privacy Policy</span>.
+          </p>
+
+          <div style={{ textAlign:'center', marginTop:'1rem', fontFamily:T.mono, fontSize:'0.62rem', color:T.txtMut, letterSpacing:'0.07em' }}>
+            SECURED · SUPABASE AUTHENTICATION
           </div>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }

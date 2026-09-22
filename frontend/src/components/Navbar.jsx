@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { StorageService } from '../services/storage';
+import { SupabaseService } from '../services/supabaseService';
 import { 
   Compass, 
   PlusCircle, 
@@ -48,7 +49,6 @@ export default function Navbar({ activeTab, setActiveTab }) {
       icon: CheckSquare, 
       badge: pendingAssignmentsCount > 0 ? pendingAssignmentsCount : null 
     },
-    { id: 'insight', label: 'Insights', icon: Activity },
     { id: 'profile', label: 'Profile', icon: User },
   ];
 
@@ -282,6 +282,10 @@ export default function Navbar({ activeTab, setActiveTab }) {
                     style={{ background: 'none', border: 'none', fontSize: '0.75rem', cursor: 'pointer', color: 'var(--graph-blue)' }}
                     onClick={() => {
                       notifications.forEach(n => StorageService.markNotificationRead(n.id));
+                      if (currentUser?.id) {
+                        SupabaseService.markAllNotificationsAsRead(currentUser.id);
+                      }
+                      updateQueueCount();
                       setShowNotifMenu(false);
                     }}
                   >

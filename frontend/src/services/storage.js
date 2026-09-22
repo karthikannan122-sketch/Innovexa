@@ -65,14 +65,38 @@ export const StorageService = {
   init() {
     if (typeof localStorage === 'undefined') return;
 
-    if (!localStorage.getItem(STORAGE_KEYS.USERS) || JSON.parse(localStorage.getItem(STORAGE_KEYS.USERS) || '[]').length === 0) {
+    const existingUsers = localStorage.getItem(STORAGE_KEYS.USERS);
+    if (!existingUsers || JSON.parse(existingUsers || '[]').length === 0) {
       localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(INITIAL_USERS));
+    } else {
+      try {
+        let parsed = JSON.parse(existingUsers) || [];
+        const missing = INITIAL_USERS.filter(u => !parsed.some(p => p.id === u.id));
+        if (missing.length > 0) {
+          parsed = [...parsed, ...missing];
+          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(parsed));
+        }
+      } catch {
+        localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(INITIAL_USERS));
+      }
     }
     if (!localStorage.getItem(STORAGE_KEYS.CURRENT_USER_ID)) {
       localStorage.setItem(STORAGE_KEYS.CURRENT_USER_ID, 'usr_karthick_founder');
     }
-    if (!localStorage.getItem(STORAGE_KEYS.CATEGORIES)) {
+    const existingCats = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
+    if (!existingCats || JSON.parse(existingCats || '[]').length === 0) {
       localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(INITIAL_CATEGORIES));
+    } else {
+      try {
+        let parsed = JSON.parse(existingCats) || [];
+        const missing = INITIAL_CATEGORIES.filter(c => !parsed.some(i => i.name?.toLowerCase() === c.name?.toLowerCase()));
+        if (missing.length > 0) {
+          parsed = [...parsed, ...missing];
+          localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(parsed));
+        }
+      } catch {
+        localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(INITIAL_CATEGORIES));
+      }
     }
     
     const existingInnos = localStorage.getItem(STORAGE_KEYS.INNOVATIONS);
@@ -91,8 +115,20 @@ export const StorageService = {
       }
     }
 
-    if (!localStorage.getItem(STORAGE_KEYS.REVIEWS) || JSON.parse(localStorage.getItem(STORAGE_KEYS.REVIEWS) || '[]').length === 0) {
+    const existingRevs = localStorage.getItem(STORAGE_KEYS.REVIEWS);
+    if (!existingRevs || JSON.parse(existingRevs || '[]').length === 0) {
       localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(INITIAL_REVIEWS));
+    } else {
+      try {
+        let parsed = JSON.parse(existingRevs) || [];
+        const missing = INITIAL_REVIEWS.filter(r => !parsed.some(i => i.id === r.id));
+        if (missing.length > 0) {
+          parsed = [...parsed, ...missing];
+          localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(parsed));
+        }
+      } catch {
+        localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(INITIAL_REVIEWS));
+      }
     }
     if (!localStorage.getItem(STORAGE_KEYS.ASSIGNMENTS) || JSON.parse(localStorage.getItem(STORAGE_KEYS.ASSIGNMENTS) || '[]').length === 0) {
       localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(INITIAL_ASSIGNMENTS));
@@ -235,8 +271,12 @@ export const StorageService = {
 
   getCurrentUser() {
     const id = this.getCurrentUserId();
-    if (!id) return null;
-    return this.getUserById(id);
+    if (id) {
+      const u = this.getUserById(id);
+      if (u) return u;
+    }
+    const all = this.getUsers();
+    return all.length > 0 ? all[0] : null;
   },
 
   // Register real user
@@ -521,6 +561,10 @@ export const StorageService = {
     return newInno;
   },
 
+  addInnovation(data) {
+    return this.createInnovation(data);
+  },
+
   updateInnovation(id, updates) {
     const list = this.getInnovations();
     const index = list.findIndex(i => i.id === id || i.project_id === id);
@@ -786,11 +830,14 @@ export const StorageService = {
     if (!projectId) return { upvotes: 0, downvotes: 0, total: 0 };
     const stats = this.getVotesForTarget('project', projectId);
     const inno = this.getInnovationById(projectId);
-    const baseUpvotes = inno?.upvotes_count || 0;
+    const baseUpvotes = inno ? (inno.base_upvotes ?? (inno.upvotes_count || 0)) : 0;
+    const baseDownvotes = inno ? (inno.base_downvotes ?? (inno.downvotes_count || 0)) : 0;
+    const upvotes = baseUpvotes + stats.upvotes;
+    const downvotes = baseDownvotes + stats.downvotes;
     return {
-      upvotes: Math.max(stats.upvotes, baseUpvotes),
-      downvotes: stats.downvotes,
-      total: Math.max(stats.upvotes, baseUpvotes) - stats.downvotes
+      upvotes,
+      downvotes,
+      total: upvotes - downvotes
     };
   },
 
@@ -1043,49 +1090,52 @@ export const StorageService = {
   // ============================================================================
 
   getCommunityPosts(filters = {}) {
-    if (typeof window === 'undefined' || typeof localStorage === 'undefined') return INITIAL_COMMUNITY_POSTS;
-    const raw = localStorage.getItem(STORAGE_KEYS.COMMUNITY_POSTS);
-    let list = raw ? JSON.parse(raw) : INITIAL_COMMUNITY_POSTS;
-    if (!Array.isArray(list)) list = INITIAL_COMMUNITY_POSTS;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.COMMUNITY_POSTS);
+      let list = raw ? JSON.parse(raw) : INITIAL_COMMUNITY_POSTS;
+      if (!Array.isArray(list)) list = INITIAL_COMMUNITY_POSTS;
 
-    if (filters.category && filters.category !== 'ALL') {
-      list = list.filter(item => 
-        item.category_id === filters.category ||
-        (item.category_name || '').toLowerCase() === filters.category.toLowerCase() ||
-        (Array.isArray(item.tags) && item.tags.some(t => t.toLowerCase() === filters.category.toLowerCase()))
-      );
-    }
-
-    if (filters.postType && filters.postType !== 'ALL') {
-      list = list.filter(item => (item.post_type || 'DISCUSSION').toUpperCase() === filters.postType.toUpperCase());
-    }
-
-    if (filters.search && filters.search.trim()) {
-      const q = filters.search.toLowerCase().trim();
-      list = list.filter(item => 
-        (item.title || '').toLowerCase().includes(q) ||
-        (item.content || '').toLowerCase().includes(q) ||
-        (item.author_name || '').toLowerCase().includes(q) ||
-        (item.category_name || '').toLowerCase().includes(q) ||
-        (Array.isArray(item.tags) && item.tags.some(t => t.toLowerCase().includes(q)))
-      );
-    }
-
-    // Sort
-    const sortBy = filters.sortBy || 'NEWEST';
-    list = [...list].sort((a, b) => {
-      if (sortBy === 'NEWEST') return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-      if (sortBy === 'MOST_UPVOTED') return (b.upvotes_count || 0) - (a.upvotes_count || 0);
-      if (sortBy === 'MOST_DISCUSSED') return (b.comments_count || 0) - (a.comments_count || 0);
-      if (sortBy === 'TRENDING') {
-        const scoreA = (a.upvotes_count || 0) * 2 + (a.comments_count || 0) * 3;
-        const scoreB = (b.upvotes_count || 0) * 2 + (b.comments_count || 0) * 3;
-        return scoreB - scoreA;
+      if (filters.category && filters.category !== 'ALL') {
+        list = list.filter(item => 
+          item.category_id === filters.category ||
+          (item.category_name || '').toLowerCase() === filters.category.toLowerCase() ||
+          (Array.isArray(item.tags) && item.tags.some(t => t.toLowerCase() === filters.category.toLowerCase()))
+        );
       }
-      return 0;
-    });
 
-    return list;
+      if (filters.postType && filters.postType !== 'ALL') {
+        list = list.filter(item => (item.post_type || 'DISCUSSION').toUpperCase() === filters.postType.toUpperCase());
+      }
+
+      if (filters.search && filters.search.trim()) {
+        const q = filters.search.toLowerCase().trim();
+        list = list.filter(item => 
+          (item.title || '').toLowerCase().includes(q) ||
+          (item.content || '').toLowerCase().includes(q) ||
+          (item.author_name || '').toLowerCase().includes(q) ||
+          (item.category_name || '').toLowerCase().includes(q) ||
+          (Array.isArray(item.tags) && item.tags.some(t => t.toLowerCase().includes(q)))
+        );
+      }
+
+      // Sort
+      const sortBy = filters.sortBy || 'NEWEST';
+      list = [...list].sort((a, b) => {
+        if (sortBy === 'NEWEST') return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+        if (sortBy === 'MOST_UPVOTED') return (b.upvotes_count || 0) - (a.upvotes_count || 0);
+        if (sortBy === 'MOST_DISCUSSED') return (b.comments_count || 0) - (a.comments_count || 0);
+        if (sortBy === 'TRENDING') {
+          const scoreA = (a.upvotes_count || 0) * 2 + (a.comments_count || 0) * 3;
+          const scoreB = (b.upvotes_count || 0) * 2 + (b.comments_count || 0) * 3;
+          return scoreB - scoreA;
+        }
+        return 0;
+      });
+
+      return list;
+    } catch {
+      return INITIAL_COMMUNITY_POSTS;
+    }
   },
 
   getCommunityPostById(id) {
@@ -1137,15 +1187,18 @@ export const StorageService = {
   // ============================================================================
 
   getCommunityComments(postId) {
-    if (typeof window === 'undefined' || typeof localStorage === 'undefined') return INITIAL_COMMUNITY_COMMENTS;
-    const raw = localStorage.getItem(STORAGE_KEYS.COMMUNITY_COMMENTS);
-    let list = raw ? JSON.parse(raw) : INITIAL_COMMUNITY_COMMENTS;
-    if (!Array.isArray(list)) list = INITIAL_COMMUNITY_COMMENTS;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.COMMUNITY_COMMENTS);
+      let list = raw ? JSON.parse(raw) : INITIAL_COMMUNITY_COMMENTS;
+      if (!Array.isArray(list)) list = INITIAL_COMMUNITY_COMMENTS;
 
-    if (postId) {
-      list = list.filter(c => c.post_id === postId);
+      if (postId) {
+        list = list.filter(c => c.post_id === postId);
+      }
+      return list.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+    } catch {
+      return INITIAL_COMMUNITY_COMMENTS;
     }
-    return list.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
   },
 
   createCommunityComment(data) {
@@ -1202,10 +1255,10 @@ export const StorageService = {
   // ============================================================================
 
   getCommunityResources(filters = {}) {
-    if (typeof window === 'undefined' || typeof localStorage === 'undefined') return INITIAL_COMMUNITY_RESOURCES;
-    const raw = localStorage.getItem(STORAGE_KEYS.COMMUNITY_RESOURCES);
-    let list = raw ? JSON.parse(raw) : INITIAL_COMMUNITY_RESOURCES;
-    if (!Array.isArray(list)) list = INITIAL_COMMUNITY_RESOURCES;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.COMMUNITY_RESOURCES);
+      let list = raw ? JSON.parse(raw) : INITIAL_COMMUNITY_RESOURCES;
+      if (!Array.isArray(list)) list = INITIAL_COMMUNITY_RESOURCES;
 
     if (filters.category && filters.category !== 'ALL') {
       list = list.filter(item => 
@@ -1240,6 +1293,9 @@ export const StorageService = {
     });
 
     return list;
+    } catch {
+      return INITIAL_COMMUNITY_RESOURCES;
+    }
   },
 
   createCommunityResource(data) {
@@ -1328,23 +1384,46 @@ export const StorageService = {
     return Array.isArray(list) ? list : INITIAL_VOTES;
   },
 
-  getUserVote({ userId, targetType, targetId }) {
+  getUserVote(arg1, arg2, arg3) {
+    let userId, targetType, targetId;
+    if (arg1 && typeof arg1 === 'object' && !arg2) {
+      userId = arg1.userId;
+      targetType = arg1.targetType;
+      targetId = arg1.targetId;
+    } else {
+      userId = arg1;
+      targetType = arg2;
+      targetId = arg3;
+    }
     if (!userId || !targetType || !targetId) return null;
     const votes = this.getVotes();
-    return votes.find(v => v.user_id === userId && v.target_type === targetType && v.target_id === targetId) || null;
+    const entry = votes.find(v => 
+      String(v.user_id) === String(userId) && 
+      v.target_type === targetType && 
+      (String(v.target_id) === String(targetId) || String(v.innovation_id) === String(targetId))
+    );
+    return entry ? (entry.vote_type || null) : null;
   },
 
   getVotesForTarget(targetType, targetId) {
-    const votes = this.getVotes().filter(v => v.target_type === targetType && v.target_id === targetId);
-    const upvotes = votes.filter(v => v.vote_type === 'upvote').length;
-    const downvotes = votes.filter(v => v.vote_type === 'downvote').length;
+    if (!targetType || !targetId) return { upvotes: 0, downvotes: 0, total: 0, votes: [] };
+    const votes = this.getVotes().filter(v => 
+      v.target_type === targetType && 
+      (String(v.target_id) === String(targetId) || String(v.innovation_id) === String(targetId))
+    );
+    const upvotes = votes.filter(v => v.vote_type === 'upvote' || v.vote_type === 'like' || v.vote_type === 'helpful').length;
+    const downvotes = votes.filter(v => v.vote_type === 'downvote' || v.vote_type === 'dislike' || v.vote_type === 'not_helpful').length;
     return { upvotes, downvotes, total: upvotes - downvotes, votes };
   },
 
   toggleVote({ userId, targetType, targetId, voteType = 'upvote', userName = 'Innovator', userAvatar = '' }) {
     if (!userId || !targetType || !targetId || !voteType) return null;
     let votes = this.getVotes();
-    const existingIndex = votes.findIndex(v => v.user_id === userId && v.target_type === targetType && v.target_id === targetId);
+    const existingIndex = votes.findIndex(v => 
+      String(v.user_id) === String(userId) && 
+      v.target_type === targetType && 
+      (String(v.target_id) === String(targetId) || String(v.innovation_id) === String(targetId))
+    );
 
     let activeVoteType = null;
 
@@ -1369,6 +1448,7 @@ export const StorageService = {
         user_id: userId,
         target_type: targetType,
         target_id: targetId,
+        innovation_id: targetId,
         vote_type: voteType,
         user_name: userName || 'Innovator',
         user_avatar: userAvatar || '',
@@ -1379,21 +1459,27 @@ export const StorageService = {
 
     localStorage.setItem(STORAGE_KEYS.VOTES, JSON.stringify(votes));
 
-    // Update target item cached counts
+    // Update target item cached counts, preserving original base counts
     const targetVotes = this.getVotesForTarget(targetType, targetId);
 
     if (targetType === 'discussion') {
       const posts = this.getCommunityPosts();
-      const p = posts.find(item => item.id === targetId);
+      const p = posts.find(item => String(item.id) === String(targetId));
       if (p) {
-        p.upvotes_count = targetVotes.upvotes;
-        p.downvotes_count = targetVotes.downvotes;
+        if (p.base_upvotes === undefined) {
+          p.base_upvotes = p.upvotes_count || p.likes_count || 0;
+          p.base_downvotes = p.downvotes_count || p.dislikes_count || 0;
+        }
+        p.upvotes_count = p.base_upvotes + targetVotes.upvotes;
+        p.likes_count = p.upvotes_count;
+        p.downvotes_count = p.base_downvotes + targetVotes.downvotes;
+        p.dislikes_count = p.downvotes_count;
         localStorage.setItem(STORAGE_KEYS.COMMUNITY_POSTS, JSON.stringify(posts));
         notifyDataChange('communityPosts');
       }
     } else if (targetType === 'comment') {
       const comments = this.getCommunityComments();
-      const c = comments.find(item => item.id === targetId);
+      const c = comments.find(item => String(item.id) === String(targetId));
       if (c) {
         c.upvotes_count = targetVotes.upvotes;
         c.downvotes_count = targetVotes.downvotes;
@@ -1402,28 +1488,39 @@ export const StorageService = {
       }
     } else if (targetType === 'resource') {
       const resources = this.getCommunityResources();
-      const r = resources.find(item => item.id === targetId);
+      const r = resources.find(item => String(item.id) === String(targetId));
       if (r) {
-        r.upvotes_count = targetVotes.upvotes;
+        if (r.base_upvotes === undefined) {
+          r.base_upvotes = r.upvotes_count || 0;
+        }
+        r.upvotes_count = r.base_upvotes + targetVotes.upvotes;
         r.downvotes_count = targetVotes.downvotes;
         localStorage.setItem(STORAGE_KEYS.COMMUNITY_RESOURCES, JSON.stringify(resources));
         notifyDataChange('communityResources');
       }
     } else if (targetType === 'review') {
       const reviews = this.getReviews();
-      const r = reviews.find(item => item.id === targetId);
+      const r = reviews.find(item => String(item.id) === String(targetId));
       if (r) {
-        r.helpful_votes_count = targetVotes.upvotes;
-        r.unhelpful_votes_count = targetVotes.downvotes;
+        if (r.base_helpful === undefined) {
+          r.base_helpful = r.helpful_votes_count || 0;
+          r.base_unhelpful = r.unhelpful_votes_count || 0;
+        }
+        r.helpful_votes_count = r.base_helpful + targetVotes.upvotes;
+        r.unhelpful_votes_count = r.base_unhelpful + targetVotes.downvotes;
         localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
         notifyDataChange('reviews');
       }
     } else if (targetType === 'project') {
       const innos = this.getInnovations();
-      const inno = innos.find(item => item.id === targetId || item.project_id === targetId);
+      const inno = innos.find(item => String(item.id) === String(targetId) || String(item.project_id) === String(targetId));
       if (inno) {
-        inno.upvotes_count = targetVotes.upvotes;
-        inno.downvotes_count = targetVotes.downvotes;
+        if (inno.base_upvotes === undefined) {
+          inno.base_upvotes = inno.upvotes_count || 0;
+          inno.base_downvotes = inno.downvotes_count || 0;
+        }
+        inno.upvotes_count = inno.base_upvotes + targetVotes.upvotes;
+        inno.downvotes_count = inno.base_downvotes + targetVotes.downvotes;
         localStorage.setItem(STORAGE_KEYS.INNOVATIONS, JSON.stringify(innos));
         notifyDataChange('innovations');
       }
@@ -1472,6 +1569,48 @@ export const StorageService = {
       user_avatar: v.user_avatar || '',
       created_at: v.created_at || new Date().toISOString()
     }));
+  },
+
+  getProjectDislikes(projectId) {
+    if (!projectId) return [];
+    const votes = this.getVotes().filter(v => v.target_type === 'project' && v.target_id === projectId && v.vote_type === 'downvote');
+    return votes.map(v => ({
+      project_id: projectId,
+      user_id: v.user_id,
+      user_name: v.user_name || 'Innovator',
+      user_avatar: v.user_avatar || '',
+      created_at: v.created_at || new Date().toISOString()
+    }));
+  },
+
+  // ============================================================================
+  // PROJECT FOLLOWS / SUBSCRIPTIONS
+  // ============================================================================
+  getFollows() {
+    const data = localStorage.getItem('innovexa_follows_v1');
+    return data ? JSON.parse(data) : [];
+  },
+
+  isUserFollowingProject(userId, projectId) {
+    if (!userId || !projectId) return false;
+    const follows = this.getFollows();
+    return follows.some(f => f.user_id === userId && f.project_id === projectId);
+  },
+
+  followProject(userId, projectId) {
+    if (!userId || !projectId) return;
+    const follows = this.getFollows();
+    if (!follows.some(f => f.user_id === userId && f.project_id === projectId)) {
+      follows.push({ user_id: userId, project_id: projectId, created_at: new Date().toISOString() });
+      localStorage.setItem('innovexa_follows_v1', JSON.stringify(follows));
+    }
+  },
+
+  unfollowProject(userId, projectId) {
+    if (!userId || !projectId) return;
+    let follows = this.getFollows();
+    follows = follows.filter(f => !(f.user_id === userId && f.project_id === projectId));
+    localStorage.setItem('innovexa_follows_v1', JSON.stringify(follows));
   },
 
   // ============================================================================

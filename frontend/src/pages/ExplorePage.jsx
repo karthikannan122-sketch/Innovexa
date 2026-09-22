@@ -155,6 +155,46 @@ export default function ExplorePage({ setActiveTab, setSelectedInnoId, exploreFi
     setTimeframe('ALL');
   };
 
+  const handleOpenProject = (id) => {
+    if (typeof setSelectedInnoId === 'function') setSelectedInnoId(id);
+    if (typeof setActiveTab === 'function') setActiveTab('detail');
+  };
+
+  const handleOpenExternal = (item) => {
+    setSelectedExternalItem(item);
+  };
+
+  const handleLikeExternal = async (e, item) => {
+    if (e?.stopPropagation) e.stopPropagation();
+    if (!item?.id) return;
+    const itemId = item.id;
+    const isCurrentlyLiked = Boolean(hasLikedExternal[itemId]);
+    const nextLiked = !isCurrentlyLiked;
+    
+    // 1. Instant optimistic UI update (0ms press latency)
+    setHasLikedExternal(prev => ({ ...prev, [itemId]: nextLiked }));
+    setExternalInnovations(prev => prev.map(ext => ext.id === itemId ? {
+      ...ext,
+      likes_count: Math.max(0, (ext.likes_count || 0) + (nextLiked ? 1 : -1))
+    } : ext));
+
+    if (selectedExternalItem?.id === itemId) {
+      setSelectedExternalItem(prev => prev ? {
+        ...prev,
+        likes_count: Math.max(0, (prev.likes_count || 0) + (nextLiked ? 1 : -1))
+      } : prev);
+    }
+
+    try {
+      await SupabaseService.likeExternalInnovation(itemId);
+      if (nextLiked && typeof showToast === 'function') {
+        showToast('Appreciated discovery signal!', 'success');
+      }
+    } catch (err) {
+      console.warn('Error recording appreciation:', err);
+    }
+  };
+
   // Extract unique external sources for the filter dropdown
   const availableSources = useMemo(() => {
     return Array.from(new Set(externalInnovations.map(e => e.source_name).filter(Boolean)));
@@ -373,31 +413,6 @@ export default function ExplorePage({ setActiveTab, setSelectedInnoId, exploreFi
 
   const totalResultsCount = sortedCommunity.length + sortedExternal.length;
   const totalDatabaseCount = communityProjects.length + externalInnovations.length;
-
-  const handleOpenProject = (id) => {
-    setSelectedInnoId(id);
-    setActiveTab('detail');
-  };
-
-  const handleOpenExternal = (item) => {
-    setSelectedExternalItem(item);
-  };
-
-  // Optimistic Like Handler (Zero latency, no blinking)
-  const handleLikeExternal = async (e, item) => {
-    e.stopPropagation();
-    setHasLikedExternal(prev => ({ ...prev, [item.id]: true }));
-    setExternalInnovations(prev => prev.map(d => d.id === item.id ? { ...d, likes_count: (d.likes_count || 0) + 1 } : d));
-    if (selectedExternalItem?.id === item.id) {
-      setSelectedExternalItem(prev => ({ ...prev, likes_count: (prev.likes_count || 0) + 1 }));
-    }
-
-    try {
-      await SupabaseService.likeExternalInnovation(item.id);
-    } catch (err) {
-      console.error('Error syncing external like:', err);
-    }
-  };
 
   // Personalized Curated List memoized
   const curatedList = useMemo(() => {

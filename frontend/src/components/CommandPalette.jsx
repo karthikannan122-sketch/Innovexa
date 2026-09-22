@@ -143,13 +143,13 @@ export default function CommandPalette({ setActiveTab, setSelectedInnoId, setExp
       }
     },
     {
-      id: 'action_messages',
-      title: 'Messages & Notifications',
-      subtitle: 'Review feedback alerts, upvotes, and review receipts',
+      id: 'action_research',
+      title: 'AI Research & Open Intelligence Desk',
+      subtitle: 'Synthesize open-source foundations and evaluate research hypotheses',
       section: 'PAGES & ACTIONS',
-      icon: MessageSquare,
+      icon: Sparkles,
       action: () => {
-        setActiveTab('messages');
+        setActiveTab('research');
         setIsCommandPaletteOpen(false);
       }
     },

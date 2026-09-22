@@ -268,11 +268,57 @@ export function generateProjectPersonalInsights(project, reviews = []) {
   const reviewsCount = reviews.length;
   const communityInterestPct = Math.min(100, Math.max(15, Math.round((upvotesCount * 8) + (reviewsCount * 12) + (hasLaunchUrl ? 15 : 5))));
 
+  // 11. Opportunities and Risks
+  const opportunities = [
+    `Expand API ecosystem and third-party workflow integrations across ${category}.`,
+    `Leverage active validator community on INNOVEXA for rapid early-adopter beta testing.`,
+    `Build verifiable domain benchmarks to establish high defensibility against incumbents.`
+  ];
+
+  const risks = [
+    `Adoption inertia from legacy practitioners accustomed to conventional manual methods in ${category}.`,
+    `Latency and throughput bottlenecks as concurrent analytical pipelines scale.`,
+    `Data consistency, compliance, or regulatory boundaries in specialized domain sub-sectors.`
+  ];
+
+  const recommendedImprovements = [
+    {
+      title: hasLaunchUrl ? 'Measure User Time-to-First-Value' : 'Deploy Interactive Demonstration Sandbox',
+      description: hasLaunchUrl ? `Conduct 5 live walkthroughs with ${targetAudience.slice(0, 40)} to quantify workflow acceleration.` : `Attach a live demo or prototype sandbox to allow peer validators to test ${title}.`,
+      priority: 'HIGH'
+    },
+    {
+      title: 'Quantify Stated Pain Point Metrics',
+      description: 'Document specific time/cost reduction targets (e.g. 35% time saved) in the public problem statement.',
+      priority: 'MEDIUM'
+    },
+    {
+      title: 'Instrument Real-Time Telemetry Logging',
+      description: 'Record latency, error rates, and interaction satisfaction to build verifiable validator consensus.',
+      priority: 'LOW'
+    }
+  ];
+
+  const feasibilityScoreVal = minMax(75 + (hasLaunchUrl ? 10 : 0) + (features.length >= 2 ? 10 : 5), 65, 95);
+  const marketPotentialVal = minMax(70 + (targetAudience.length > 20 ? 15 : 8) + (totalReadinessScore > 75 ? 10 : 5), 60, 94);
+
   return {
     project_id: project.id,
     project_title: title,
+    project_overview: {
+      title,
+      category,
+      summary,
+      stage: project.project_stage || (project.creation_type === 'PRODUCT' ? 'prototype' : 'idea'),
+      status: project.status || 'under_validation'
+    },
     project_summary: summary,
     summary: summary,
+    ai_analysis: {
+      problem_analysis: clarityAnalysis,
+      solution_analysis: innovationAnalysis,
+      value_proposition: valueProposition
+    },
     problem_clarity: {
       status: clarityStatus,
       score: problemClarityScore * 5,
@@ -286,6 +332,26 @@ export function generateProjectPersonalInsights(project, reviews = []) {
       score: totalReadinessScore,
       analysis: innovationAnalysis
     },
+    innovation_score: {
+      score: totalReadinessScore,
+      level: totalReadinessScore >= 80 ? 'High' : (totalReadinessScore >= 65 ? 'Moderate' : 'Emerging'),
+      breakdown: {
+        uniqueness: Math.round(differentiationScore * 1.6),
+        problem_clarity: Math.round(problemClarityScore * 1.25),
+        solution_fit: Math.round(solutionClarityScore * 1.25),
+        execution_readiness: Math.round(implementationScore * 1.6)
+      }
+    },
+    feasibility_score: {
+      score: feasibilityScoreVal,
+      level: feasibilityScoreVal >= 80 ? 'High' : 'Moderate',
+      explanation: `The technical stack utilizing modern web and API protocols is technically sound with manageable implementation complexity.`
+    },
+    market_potential: {
+      score: marketPotentialVal,
+      potential: marketPotentialVal >= 80 ? 'High' : 'Moderate',
+      explanation: `Strong market upside among ${targetAudience} seeking streamlined, dedicated digital execution.`
+    },
     value_proposition: valueProposition,
     target_audience: targetAudience,
     target_users: targetAudience,
@@ -293,6 +359,9 @@ export function generateProjectPersonalInsights(project, reviews = []) {
     weaknesses: areasToImprove.slice(0, 5),
     gaps: areasToImprove.slice(0, 5),
     areas_to_improve: areasToImprove.slice(0, 5),
+    opportunities,
+    risks,
+    recommended_improvements: recommendedImprovements,
     community_feedback: {
       has_reviews: hasReviews,
       reviews_count: reviewsCount,
@@ -343,11 +412,27 @@ export function generateProjectPersonalInsights(project, reviews = []) {
       likes_count: upvotesCount,
       helpful_reviews_count: helpfulReviewsCount
     },
+    stats: {
+      totalReviews: reviewsCount,
+      wouldUsePercent: reviewsCount > 0 ? Math.round((reviews.filter(r => (r.would_use === 'YES' || (Number(r.rating) || 5) >= 4)).length / reviewsCount) * 100) : 100,
+      avgRating: reviewsCount > 0 ? (reviews.reduce((a, r) => a + (Number(r.rating) || 5), 0) / reviewsCount).toFixed(1) : '5.0',
+      helpfulCount: helpfulReviewsCount,
+      sentiment: sentimentLabel,
+      readinessScore: totalReadinessScore
+    },
+    sentiment: sentimentLabel,
+    positive_points: positiveThemes,
+    common_problems: areasToImprove,
+    recommendations: highPriority.concat(mediumPriority).map(h => `${h.title}: ${h.description}`),
     overall_score: totalReadinessScore,
     confidence: 90,
     model_used: 'semantic-domain-analyzer',
     generated_at: new Date().toISOString()
   };
+}
+
+function minMax(val, min, max) {
+  return Math.min(max, Math.max(min, val));
 }
 
 /**
@@ -424,7 +509,7 @@ export async function generateFeedbackInsights(innovation, reviews = [], forceRe
   const apiBase = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:8000/api/v1';
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 1200);
 
     const backendRes = await fetch(`${apiBase}/ai/generate-insights`, {
       method: 'POST',
@@ -467,23 +552,24 @@ ${problemStatement || 'Early-stage innovation in ' + categoryName}
 DESCRIPTION:
 ${description || 'Innovation project in ' + categoryName}
 
-TARGET USERS:
-${targetUsers || 'Domain practitioners and users in ' + categoryName}
-
 PROPOSED SOLUTION:
-${proposedSolution || 'Structured solution targeting core workflow bottlenecks.'}
+${proposedSolution || 'Direct domain implementation in ' + categoryName}
 
-TECHNOLOGIES:
-${technologies.join(', ') || 'Modern web and cloud architectures'}
+TARGET USERS:
+${targetUsers || 'Domain specialists and early adopters'}
 
-TAGS:
-${tags.join(', ') || categoryName}
+KEY FEATURES:
+${technologies.join(', ') || 'Core domain architecture'}
 
-COMMUNITY REVIEWS COUNT:
-${reviews.length}
+LIVE URL:
+${websiteUrl || 'Not specified'}
 
-COMMUNITY FEEDBACK HIGHLIGHTS:
+PEER VALIDATION REVIEWS SUMMARY:
 ${reviewsSummary}
+
+COMMUNITY SIGNALS:
+Total Upvotes / Likes: ${innovation.upvotes_count || 0}
+Total Peer Reviews: ${reviews.length}
 
 Analyze this project and provide a strictly valid JSON object matching this schema:
 {
@@ -542,7 +628,7 @@ Do not repeat generic boilerplate.
 Return only valid JSON.`;
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 9000);
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
 
       const geminiRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${clientApiKey}`,
@@ -641,11 +727,82 @@ function normalizeInsightOutput(data, innovation, reviews = []) {
     { title: 'Invite Peer Reviews', description: `Request domain validation reviews on INNOVEXA.`, tag: 'COMMUNITY' }
   ];
 
+  const opportunities = Array.isArray(data.opportunities) && data.opportunities.length > 0
+    ? data.opportunities
+    : [
+      `Expand API ecosystem and third-party workflow integrations across ${innovation.category_name || 'Technology'}.`,
+      `Leverage active validator community on INNOVEXA for rapid early-adopter beta testing.`,
+      `Build verifiable domain benchmarks to establish high defensibility against incumbents.`
+    ];
+
+  const risks = Array.isArray(data.risks) && data.risks.length > 0
+    ? data.risks
+    : [
+      `Adoption inertia from legacy practitioners accustomed to conventional manual methods in ${innovation.category_name || 'Technology'}.`,
+      `Latency and throughput bottlenecks as concurrent analytical pipelines scale.`,
+      `Data consistency, compliance, or regulatory boundaries in specialized domain sub-sectors.`
+    ];
+
+  const recommendedImprovements = Array.isArray(data.recommended_improvements) && data.recommended_improvements.length > 0
+    ? data.recommended_improvements
+    : [
+      {
+        title: 'Deploy Interactive Demonstration Sandbox',
+        description: `Attach a live demo or prototype sandbox to allow peer validators to test ${title}.`,
+        priority: 'HIGH'
+      },
+      {
+        title: 'Quantify Stated Pain Point Metrics',
+        description: 'Document specific time/cost reduction targets in the public problem statement.',
+        priority: 'MEDIUM'
+      },
+      {
+        title: 'Instrument Real-Time Telemetry Logging',
+        description: 'Record latency, error rates, and interaction satisfaction to build verifiable validator consensus.',
+        priority: 'LOW'
+      }
+    ];
+
+  const innoScore = data.innovation_score || {
+    score: overallScore,
+    level: overallScore >= 80 ? 'High' : (overallScore >= 65 ? 'Moderate' : 'Emerging'),
+    breakdown: {
+      uniqueness: 85,
+      problem_clarity: 88,
+      solution_fit: 86,
+      execution_readiness: 80
+    }
+  };
+
+  const feasScore = data.feasibility_score || {
+    score: Math.min(95, Math.max(65, overallScore + 4)),
+    level: 'High',
+    explanation: 'The technical stack utilizing modern web and API protocols is technically sound with manageable implementation complexity.'
+  };
+
+  const mktScore = data.market_potential || {
+    score: Math.min(94, Math.max(60, overallScore + 2)),
+    potential: 'High',
+    explanation: `Strong market upside among target practitioners seeking streamlined, dedicated digital execution.`
+  };
+
   return {
     project_id: innovation.id,
     project_title: title,
+    project_overview: data.project_overview || {
+      title,
+      category: innovation.category_name || 'Technology',
+      summary: data.project_summary || data.summary || innovation.description,
+      stage: innovation.project_stage || (innovation.creation_type === 'PRODUCT' ? 'prototype' : 'idea'),
+      status: innovation.status || 'under_validation'
+    },
     project_summary: data.project_summary || data.summary || innovation.description,
     summary: data.project_summary || data.summary || innovation.description,
+    ai_analysis: data.ai_analysis || {
+      problem_analysis: data.problem_analysis?.analysis || data.problem_clarity?.analysis || innovation.problem_statement,
+      solution_analysis: data.innovation?.analysis || data.value_proposition || innovation.proposed_solution,
+      value_proposition: data.value_proposition || innovation.proposed_solution
+    },
     problem_clarity: {
       status: data.problem_clarity?.status || clarityStatus,
       score: data.problem_analysis?.clarity_score || 85,
@@ -659,6 +816,12 @@ function normalizeInsightOutput(data, innovation, reviews = []) {
       score: overallScore,
       analysis: data.value_proposition || innovation.proposed_solution
     },
+    innovation_score: innoScore,
+    feasibility_score: feasScore,
+    market_potential: mktScore,
+    opportunities,
+    risks,
+    recommended_improvements: recommendedImprovements,
     value_proposition: data.value_proposition || data.innovation?.analysis || innovation.proposed_solution,
     target_audience: data.target_users || data.target_audience || innovation.target_users,
     target_users: data.target_users || data.target_audience || innovation.target_users,
@@ -736,3 +899,5 @@ function saveInsightToCache(cacheKey, data) {
     }
   }
 }
+
+export const generateRuleBasedInsights = generateProjectPersonalInsights;

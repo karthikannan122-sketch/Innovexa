@@ -8,12 +8,24 @@ import StatusBadge, { StageBadge } from '../components/StatusBadge';
 import CountUp from '../components/CountUp';
 import confetti from 'canvas-confetti';
 import { 
+  RatingDistributionChart, 
+  VoteRatioChart, 
+  EngagementMixChart, 
+  ActivityTimelineChart, 
+  EmptyDataFallback 
+} from '../components/AnalyticsCharts';
+import { 
   Sparkles, 
   RotateCcw, 
   ArrowLeft, 
   ArrowUpRight, 
   CheckCircle2, 
   ThumbsUp, 
+  ThumbsDown,
+  Eye,
+  Star,
+  UserCheck,
+  BarChart2,
   AlertTriangle, 
   Lightbulb, 
   Wrench, 
@@ -31,9 +43,12 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   FolderKanban,
   Heart,
   MessageSquare,
+  Users,
   Clock,
   Share2,
   HelpCircle,
@@ -52,9 +67,20 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
   const [innovation, setInnovation] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [insights, setInsights] = useState(null);
+  const [projectAnalytics, setProjectAnalytics] = useState(null);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState(null);
+
+  // In-Memory Request & Cache Guards
+  const detailRequestRef = useRef(0);
+  const projectCache = useRef(new Map());
+  const insightsCache = useRef(new Map());
+  const analyticsCache = useRef(new Map());
+  const reviewsCache = useRef(new Map());
+  const activeProjectIdRef = useRef(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
 
   // Project Selector & Search Popover State
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
@@ -80,15 +106,17 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
   }, [isSelectorOpen]);
 
   // 1. Load both user projects and all platform innovations
-  const loadUserProjects = async () => {
-    setIsLoadingProjects(true);
+  const loadUserProjects = async (isInitial = false) => {
+    if (isInitial) {
+      setIsLoadingProjects(true);
+    }
     try {
       const [userProjsRes, allProjsRes] = await Promise.all([
-        currentUser ? SupabaseService.getUserProjects(currentUser.id) : Promise.resolve({ data: [] }),
+        currentUser?.id ? SupabaseService.getUserProjects(currentUser.id) : Promise.resolve({ data: [] }),
         SupabaseService.getProjects()
       ]);
 
-      const myProjs = userProjsRes.data || (currentUser ? StorageService.getInnovationsByUserId(currentUser.id) : []) || [];
+      const myProjs = userProjsRes.data || (currentUser?.id ? StorageService.getInnovationsByUserId(currentUser.id) : []) || [];
       const platformProjs = allProjsRes.data || StorageService.getInnovations() || [];
 
       setUserProjects(myProjs);
@@ -100,15 +128,15 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
         setSelectorTab('ALL');
       }
 
-      // Determine initial active project
+      // Determine active project without overwriting if user already has an active selection
       const combined = [...myProjs, ...platformProjs.filter(p => !myProjs.some(m => m.id === p.id))];
       let target = null;
 
       if (selectedInnoId) {
         target = combined.find(p => p.id === selectedInnoId);
       }
-      if (!target && activeProjectId) {
-        target = combined.find(p => p.id === activeProjectId);
+      if (!target && activeProjectIdRef.current) {
+        target = combined.find(p => p.id === activeProjectIdRef.current);
       }
       if (!target) {
         target = myProjs.length > 0 ? myProjs[0] : (platformProjs.length > 0 ? platformProjs[0] : null);
@@ -116,33 +144,44 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
 
       if (target) {
         setActiveProjectId(target.id);
-        if (setSelectedInnoId) setSelectedInnoId(target.id);
+        if (setSelectedInnoId && selectedInnoId !== target.id) {
+          setSelectedInnoId(target.id);
+        }
       } else {
         setActiveProjectId(null);
         setInnovation(null);
       }
     } catch (err) {
       console.warn('Error loading projects for Insights:', err);
-      const myProjs = currentUser ? StorageService.getInnovationsByUserId(currentUser.id) : [];
+      const myProjs = currentUser?.id ? StorageService.getInnovationsByUserId(currentUser.id) : [];
       const platformProjs = StorageService.getInnovations() || [];
       setUserProjects(myProjs);
       setAllProjects(platformProjs);
       const combined = [...myProjs, ...platformProjs.filter(p => !myProjs.some(m => m.id === p.id))];
       const target = combined[0] || null;
-      if (target) {
+      if (target && !activeProjectIdRef.current) {
         setActiveProjectId(target.id);
       }
     } finally {
-      setIsLoadingProjects(false);
+      if (isInitial) {
+        setIsLoadingProjects(false);
+      }
     }
   };
 
   useEffect(() => {
-    loadUserProjects();
-    const handler = () => loadUserProjects();
+    loadUserProjects(true);
+    const handler = () => loadUserProjects(false);
     window.addEventListener('innovexa:datachange', handler);
     return () => window.removeEventListener('innovexa:datachange', handler);
-  }, [currentUser]);
+  }, [currentUser?.id]);
+
+  // Synchronize when selectedInnoId prop changes from parent / navigation
+  useEffect(() => {
+    if (selectedInnoId && selectedInnoId !== activeProjectId) {
+      setActiveProjectId(selectedInnoId);
+    }
+  }, [selectedInnoId]);
 
   // 2. Load detailed data & AI insights whenever activeProjectId changes
   const loadActiveProjectDetails = async (targetId, forceRegen = false) => {
@@ -150,41 +189,88 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
       setInnovation(null);
       setReviews([]);
       setInsights(null);
+      setIsLoadingAnalytics(false);
+      setIsGenerating(false);
+      return;
+    }
+
+    const requestId = ++detailRequestRef.current;
+
+    // In-memory instant cache hit: prevent any flickering or repeated loading
+    if (!forceRegen && projectCache.current.has(targetId) && insightsCache.current.has(targetId)) {
+      setInnovation(projectCache.current.get(targetId));
+      setReviews(reviewsCache.current.get(targetId) || []);
+      setInsights(insightsCache.current.get(targetId));
+      setProjectAnalytics(analyticsCache.current.get(targetId) || null);
+      setIsLoadingAnalytics(false);
+      setIsGenerating(false);
+      setGenError(null);
       return;
     }
 
     setIsGenerating(true);
+    setIsLoadingAnalytics(true);
     setGenError(null);
     if (forceRegen) {
       setInsights(null);
     }
 
     try {
-      // Parallel fetch project detail and real reviews
-      const [projRes, revsRes] = await Promise.all([
+      // Parallel fetch project detail, real reviews, and authoritative analytics
+      const [projRes, revsRes, analyticsRes] = await Promise.all([
         SupabaseService.getProjectById(targetId),
-        SupabaseService.getReviews(targetId)
+        SupabaseService.getReviews(targetId),
+        SupabaseService.getProjectAnalytics(targetId)
       ]);
+
+      if (requestId !== detailRequestRef.current) {
+        return; // Discard stale response from superseded request
+      }
 
       const projectData = projRes.data || StorageService.getInnovationById(targetId) || allProjects.find(p => p.id === targetId);
       if (!projectData) {
         setInnovation(null);
+        setProjectAnalytics(null);
         setIsGenerating(false);
+        setIsLoadingAnalytics(false);
         return;
       }
 
       const projectReviews = revsRes.data || StorageService.getReviewsForInnovation(targetId) || [];
-      setInnovation(projectData);
-      setReviews(projectReviews);
+      const analyticsData = analyticsRes?.data || null;
 
       // Generate or load cached AI insights strictly for this project
       const generated = await generateFeedbackInsights(projectData, projectReviews, forceRegen);
+
+      if (requestId !== detailRequestRef.current) {
+        return; // Discard stale response
+      }
+
+      // Cache results in memory
+      projectCache.current.set(targetId, projectData);
+      reviewsCache.current.set(targetId, projectReviews);
+      insightsCache.current.set(targetId, generated);
+      if (analyticsData) {
+        analyticsCache.current.set(targetId, analyticsData);
+      }
+
+      // Single atomic batch update
+      setInnovation(projectData);
+      setReviews(projectReviews);
+      if (analyticsData) {
+        setProjectAnalytics(analyticsData);
+      }
       setInsights(generated);
     } catch (err) {
-      console.error('[Insights loadActiveProjectDetails error]:', err);
-      setGenError('Unable to generate AI insights. Please try again.');
+      if (requestId === detailRequestRef.current) {
+        console.error('[Insights loadActiveProjectDetails error]:', err);
+        setGenError('Unable to generate AI insights. Please try again.');
+      }
     } finally {
-      setIsGenerating(false);
+      if (requestId === detailRequestRef.current) {
+        setIsGenerating(false);
+        setIsLoadingAnalytics(false);
+      }
     }
   };
 
@@ -194,16 +280,58 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
     }
   }, [activeProjectId]);
 
-  // Handle switching to another project
+  // Active list of available projects for cycle navigation
+  const activeProjectList = useMemo(() => {
+    if (selectorTab === 'MY_PROJECTS' && userProjects.length > 0) {
+      return userProjects;
+    }
+    const combined = [...userProjects, ...allProjects.filter(p => !userProjects.some(m => m.id === p.id))];
+    return combined.length > 0 ? combined : allProjects;
+  }, [userProjects, allProjects, selectorTab]);
+
+  const currentProjectIndex = useMemo(() => {
+    return activeProjectList.findIndex(p => p.id === activeProjectId);
+  }, [activeProjectList, activeProjectId]);
+
+  // Handle switching to another project with instant visual responsiveness
   const handleSelectProject = (project) => {
-    if (!project || project.id === activeProjectId) {
+    if (!project) {
       setIsSelectorOpen(false);
       return;
     }
     setIsSelectorOpen(false);
     setSelectorSearch('');
+    
+    // Instant metadata switch from cache if available
+    if (projectCache.current.has(project.id)) {
+      setInnovation(projectCache.current.get(project.id));
+      setReviews(reviewsCache.current.get(project.id) || []);
+      setInsights(insightsCache.current.get(project.id) || null);
+      setProjectAnalytics(analyticsCache.current.get(project.id) || null);
+    } else {
+      setInnovation(project);
+      const cachedRevs = StorageService.getReviewsForInnovation(project.id);
+      setReviews(cachedRevs || []);
+    }
+
     setActiveProjectId(project.id);
-    if (setSelectedInnoId) setSelectedInnoId(project.id);
+    if (setSelectedInnoId && selectedInnoId !== project.id) {
+      setSelectedInnoId(project.id);
+    }
+  };
+
+  const handleNextProject = () => {
+    if (activeProjectList.length <= 1) return;
+    const nextIdx = currentProjectIndex >= 0 ? (currentProjectIndex + 1) % activeProjectList.length : 0;
+    handleSelectProject(activeProjectList[nextIdx]);
+  };
+
+  const handlePrevProject = () => {
+    if (activeProjectList.length <= 1) return;
+    const prevIdx = currentProjectIndex >= 0 
+      ? (currentProjectIndex - 1 + activeProjectList.length) % activeProjectList.length 
+      : activeProjectList.length - 1;
+    handleSelectProject(activeProjectList[prevIdx]);
   };
 
   // Handle manual AI regeneration
@@ -375,219 +503,314 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
           </div>
         </div>
 
-        {/* Dropdown Toggle Button */}
-        <div style={{ position: 'relative' }}>
-          <button
-            type="button"
-            onClick={() => setIsSelectorOpen(!isSelectorOpen)}
-            className="btn btn-secondary btn-md"
-            style={{
-              padding: '0.55rem 1.25rem',
-              gap: '0.55rem',
-              fontWeight: 700,
-              backgroundColor: isSelectorOpen ? 'var(--bg-cream)' : 'var(--bg-white)',
-              borderColor: isSelectorOpen ? 'var(--coral)' : 'var(--border-medium)'
-            }}
-          >
-            <span>{innovation ? 'Change Project' : 'Select a project'}</span>
-            <ChevronDown 
-              size={15} 
-              style={{ 
-                transform: isSelectorOpen ? 'rotate(180deg)' : 'none', 
-                transition: 'transform 0.2s ease' 
-              }} 
-            />
-          </button>
-
-          {/* Searchable Dropdown Popover */}
-          {isSelectorOpen && (
-            <div
+        {/* Dropdown & Cycle Navigation Controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {/* Previous Project Button */}
+          {activeProjectList.length > 1 && (
+            <button
+              type="button"
+              onClick={handlePrevProject}
+              className="btn btn-secondary btn-md"
               style={{
-                position: 'absolute',
-                right: 0,
-                top: 'calc(100% + 8px)',
-                width: 'min(460px, 90vw)',
-                maxHeight: '440px',
-                backgroundColor: 'var(--bg-white)',
-                borderRadius: 'var(--radius-md)',
-                boxShadow: 'var(--shadow-modal)',
-                border: '1px solid var(--border-medium)',
-                zIndex: 200,
-                display: 'flex',
-                flexDirection: 'column',
-                animation: 'fadeIn 0.15s ease-out'
+                padding: '0.55rem 0.85rem',
+                gap: '0.35rem',
+                fontWeight: 700,
+                fontSize: '0.82rem'
+              }}
+              title="Switch to previous project"
+            >
+              <ChevronLeft size={15} /> Prev
+            </button>
+          )}
+
+          {/* Project Counter Badge */}
+          {activeProjectList.length > 0 && currentProjectIndex >= 0 && (
+            <span
+              className="editorial-mono-label"
+              style={{
+                fontSize: '0.72rem',
+                color: 'var(--text-secondary)',
+                backgroundColor: 'var(--bg-cream)',
+                padding: '0.35rem 0.65rem',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)'
               }}
             >
-              {/* Search Header & Scope Tabs */}
-              <div style={{ padding: '0.85rem', borderBottom: '1px solid var(--border-hairline)' }}>
-                {userProjects.length > 0 && (
-                  <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.65rem' }}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectorTab('MY_PROJECTS')}
-                      style={{
-                        flex: 1,
-                        padding: '0.35rem 0.6rem',
-                        fontSize: '0.74rem',
-                        fontWeight: 700,
-                        borderRadius: 'var(--radius-sm)',
-                        border: '1px solid',
-                        borderColor: selectorTab === 'MY_PROJECTS' ? 'var(--coral)' : 'var(--border-subtle)',
-                        backgroundColor: selectorTab === 'MY_PROJECTS' ? 'rgba(231, 111, 130, 0.08)' : 'var(--bg-white)',
-                        color: selectorTab === 'MY_PROJECTS' ? 'var(--coral)' : 'var(--text-secondary)',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      My Projects ({userProjects.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectorTab('ALL')}
-                      style={{
-                        flex: 1,
-                        padding: '0.35rem 0.6rem',
-                        fontSize: '0.74rem',
-                        fontWeight: 700,
-                        borderRadius: 'var(--radius-sm)',
-                        border: '1px solid',
-                        borderColor: selectorTab === 'ALL' ? 'var(--teal)' : 'var(--border-subtle)',
-                        backgroundColor: selectorTab === 'ALL' ? 'rgba(88, 184, 173, 0.08)' : 'var(--bg-white)',
-                        color: selectorTab === 'ALL' ? 'var(--teal)' : 'var(--text-secondary)',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      All Innovations ({allProjects.length})
-                    </button>
-                  </div>
-                )}
+              {currentProjectIndex + 1} / {activeProjectList.length}
+            </span>
+          )}
 
-                <div style={{ position: 'relative' }}>
-                  <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-                  <input
-                    type="text"
-                    value={selectorSearch}
-                    onChange={e => setSelectorSearch(e.target.value)}
-                    placeholder="Search projects by title, category, or type..."
-                    className="form-input"
-                    autoFocus
-                    style={{
-                      height: '36px',
-                      paddingLeft: '2rem',
-                      fontSize: '0.85rem',
-                      borderRadius: 'var(--radius-sm)'
-                    }}
-                  />
-                  {selectorSearch && (
-                    <button
-                      type="button"
-                      onClick={() => setSelectorSearch('')}
-                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
-                    >
-                      <X size={13} />
-                    </button>
-                  )}
-                </div>
-              </div>
+          {/* Next Project Button */}
+          {activeProjectList.length > 1 && (
+            <button
+              type="button"
+              onClick={handleNextProject}
+              className="btn btn-secondary btn-md"
+              style={{
+                padding: '0.55rem 0.85rem',
+                gap: '0.35rem',
+                fontWeight: 700,
+                fontSize: '0.82rem'
+              }}
+              title="Switch to next project"
+            >
+              Next <ChevronRight size={15} />
+            </button>
+          )}
 
-              {/* Projects List */}
-              <div style={{ overflowY: 'auto', maxHeight: '340px', padding: '0.5rem' }}>
-                {availableSelectorProjects.length > 0 ? (
-                  availableSelectorProjects.map(proj => {
-                    const isSelected = proj.id === activeProjectId;
-                    const projInk = getCategoryInk(proj.category_id, proj.category_name);
-
-                    return (
-                      <div
-                        key={proj.id}
-                        onClick={() => handleSelectProject(proj)}
-                        style={{
-                          padding: '0.85rem 1rem',
-                          borderRadius: 'var(--radius-sm)',
-                          backgroundColor: isSelected ? 'var(--bg-cream)' : 'transparent',
-                          cursor: 'pointer',
-                          marginBottom: '0.25rem',
-                          borderLeft: isSelected ? `3px solid ${projInk.hex || 'var(--coral)'}` : '3px solid transparent',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          transition: 'background-color 0.15s ease'
-                        }}
-                        onMouseEnter={e => {
-                          if (!isSelected) e.currentTarget.style.backgroundColor = 'var(--bg-ivory)';
-                        }}
-                        onMouseLeave={e => {
-                          if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
-                        }}
-                      >
-                        <div style={{ flex: 1, paddingRight: '0.5rem' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.25rem', flexWrap: 'wrap' }}>
-                            <span className={`category-tag ${projInk.tagClass}`} style={{ fontSize: '0.62rem', padding: '1px 6px' }}>
-                              {proj.category_name || 'Technology'}
-                            </span>
-                            <span 
-                              className="mono" 
-                              style={{ 
-                                fontSize: '0.65rem', 
-                                color: 'var(--text-secondary)',
-                                backgroundColor: 'rgba(0,0,0,0.04)',
-                                padding: '1px 5px',
-                                borderRadius: '2px'
-                              }}
-                            >
-                              {(proj.project_type || proj.creation_type || 'IDEA').toUpperCase()}
-                            </span>
-                          </div>
-                          <div style={{ fontWeight: isSelected ? 800 : 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
-                            {proj.title}
-                          </div>
-                        </div>
-
-                        {isSelected && (
-                          <div style={{ color: 'var(--coral)', display: 'flex', alignItems: 'center' }}>
-                            <Check size={16} />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
-                    No matching projects found for "{selectorSearch}".
-                  </div>
-                )}
-              </div>
-
-              {/* Selector Footer */}
-              <div 
+          {/* Dropdown Toggle Button */}
+          <div style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setIsSelectorOpen(!isSelectorOpen)}
+              className="btn btn-secondary btn-md"
+              style={{
+                padding: '0.55rem 1.25rem',
+                gap: '0.55rem',
+                fontWeight: 700,
+                backgroundColor: isSelectorOpen ? 'var(--bg-cream)' : 'var(--bg-white)',
+                borderColor: isSelectorOpen ? 'var(--coral)' : 'var(--border-medium)'
+              }}
+            >
+              <span>{innovation ? 'Browse All' : 'Select a project'}</span>
+              <ChevronDown 
+                size={15} 
                 style={{ 
-                  padding: '0.65rem 1rem', 
-                  borderTop: '1px solid var(--border-hairline)', 
-                  backgroundColor: 'var(--bg-cream)',
+                  transform: isSelectorOpen ? 'rotate(180deg)' : 'none', 
+                  transition: 'transform 0.2s ease' 
+                }} 
+              />
+            </button>
+
+            {/* Searchable Dropdown Popover */}
+            {isSelectorOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  right: 0,
+                  top: 'calc(100% + 8px)',
+                  width: 'min(460px, 90vw)',
+                  maxHeight: '440px',
+                  backgroundColor: 'var(--bg-white)',
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: 'var(--shadow-modal)',
+                  border: '1px solid var(--border-medium)',
+                  zIndex: 200,
                   display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  fontSize: '0.75rem',
-                  color: 'var(--text-secondary)'
+                  flexDirection: 'column',
+                  animation: 'fadeIn 0.15s ease-out'
                 }}
               >
-                <span className="mono">
-                  {selectorTab === 'MY_PROJECTS' ? 'Your Personal Catalog' : 'Innovation Directory'}
-                </span>
-                <button
-                  onClick={() => {
-                    setIsSelectorOpen(false);
-                    setActiveTab('submit');
+                {/* Search Header & Scope Tabs */}
+                <div style={{ padding: '0.85rem', borderBottom: '1px solid var(--border-hairline)' }}>
+                  {userProjects.length > 0 && (
+                    <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.65rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectorTab('MY_PROJECTS')}
+                        style={{
+                          flex: 1,
+                          padding: '0.35rem 0.6rem',
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid',
+                          borderColor: selectorTab === 'MY_PROJECTS' ? 'var(--coral)' : 'var(--border-subtle)',
+                          backgroundColor: selectorTab === 'MY_PROJECTS' ? 'rgba(231, 111, 130, 0.08)' : 'var(--bg-white)',
+                          color: selectorTab === 'MY_PROJECTS' ? 'var(--coral)' : 'var(--text-secondary)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        My Projects ({userProjects.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectorTab('ALL')}
+                        style={{
+                          flex: 1,
+                          padding: '0.35rem 0.6rem',
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid',
+                          borderColor: selectorTab === 'ALL' ? 'var(--coral)' : 'var(--border-subtle)',
+                          backgroundColor: selectorTab === 'ALL' ? 'rgba(231, 111, 130, 0.08)' : 'var(--bg-white)',
+                          color: selectorTab === 'ALL' ? 'var(--coral)' : 'var(--text-secondary)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        All Innovations ({allProjects.length})
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Search Input */}
+                  <div style={{ position: 'relative' }}>
+                    <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                    <input
+                      type="text"
+                      value={selectorSearch}
+                      onChange={e => setSelectorSearch(e.target.value)}
+                      placeholder="Search project title, domain or stack..."
+                      autoFocus
+                      style={{
+                        width: '100%',
+                        padding: '0.45rem 1.8rem 0.45rem 2rem',
+                        fontSize: '0.82rem',
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1px solid var(--border-medium)',
+                        backgroundColor: 'var(--bg-ivory)'
+                      }}
+                    />
+                    {selectorSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectorSearch('')}
+                        style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+                      >
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Projects List */}
+                <div style={{ overflowY: 'auto', maxHeight: '340px', padding: '0.5rem' }}>
+                  {availableSelectorProjects.length > 0 ? (
+                    availableSelectorProjects.map(proj => {
+                      const isSelected = proj.id === activeProjectId;
+                      const projInk = getCategoryInk(proj.category_id, proj.category_name);
+
+                      return (
+                        <div
+                          key={proj.id}
+                          onClick={() => handleSelectProject(proj)}
+                          style={{
+                            padding: '0.85rem 1rem',
+                            borderRadius: 'var(--radius-sm)',
+                            backgroundColor: isSelected ? 'var(--bg-cream)' : 'transparent',
+                            cursor: 'pointer',
+                            marginBottom: '0.25rem',
+                            borderLeft: isSelected ? `3px solid ${projInk.hex || 'var(--coral)'}` : '3px solid transparent',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            transition: 'background-color 0.15s ease'
+                          }}
+                          onMouseEnter={e => {
+                            if (!isSelected) e.currentTarget.style.backgroundColor = 'var(--bg-ivory)';
+                          }}
+                          onMouseLeave={e => {
+                            if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
+                          }}
+                        >
+                          <div style={{ flex: 1, paddingRight: '0.5rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.25rem', flexWrap: 'wrap' }}>
+                              <span className={`category-tag ${projInk.tagClass}`} style={{ fontSize: '0.62rem', padding: '1px 6px' }}>
+                                {proj.category_name || 'Technology'}
+                              </span>
+                              <span 
+                                className="mono" 
+                                style={{ 
+                                  fontSize: '0.65rem', 
+                                  color: 'var(--text-secondary)',
+                                  backgroundColor: 'rgba(0,0,0,0.04)',
+                                  padding: '1px 5px',
+                                  borderRadius: '2px'
+                                }}
+                              >
+                                {(proj.project_type || proj.creation_type || 'IDEA').toUpperCase()}
+                              </span>
+                            </div>
+                            <div style={{ fontWeight: isSelected ? 800 : 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                              {proj.title}
+                            </div>
+                          </div>
+
+                          {isSelected && (
+                            <div style={{ color: 'var(--coral)', display: 'flex', alignItems: 'center' }}>
+                              <Check size={16} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
+                      No matching projects found for "{selectorSearch}".
+                    </div>
+                  )}
+                </div>
+
+                {/* Selector Footer */}
+                <div 
+                  style={{ 
+                    padding: '0.65rem 1rem', 
+                    borderTop: '1px solid var(--border-hairline)', 
+                    backgroundColor: 'var(--bg-cream)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    fontSize: '0.75rem',
+                    color: 'var(--text-secondary)'
                   }}
-                  className="btn btn-ghost btn-sm"
-                  style={{ color: 'var(--coral)', fontWeight: 700, padding: 0, fontSize: '0.75rem' }}
                 >
-                  + New Idea ↗
-                </button>
+                  <span className="mono">
+                    {selectorTab === 'MY_PROJECTS' ? 'Your Personal Catalog' : 'Innovation Directory'}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setIsSelectorOpen(false);
+                      setActiveTab('submit');
+                    }}
+                    className="btn btn-ghost btn-sm"
+                    style={{ color: 'var(--coral)', fontWeight: 700, padding: 0, fontSize: '0.75rem' }}
+                  >
+                    + New Idea ↗
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Horizontal Quick-Switch Project Chips */}
+      {activeProjectList.length > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.75rem', marginBottom: '2rem' }}>
+          <span className="editorial-mono-label" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+            QUICK SPECIMEN SWITCH:
+          </span>
+          {activeProjectList.slice(0, 8).map(p => {
+            const isSelected = p.id === activeProjectId;
+            const pInk = getCategoryInk(p.category_id, p.category_name);
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => handleSelectProject(p)}
+                style={{
+                  padding: '0.35rem 0.85rem',
+                  fontSize: '0.78rem',
+                  fontWeight: isSelected ? 800 : 500,
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid',
+                  borderColor: isSelected ? (pInk.hex || 'var(--coral)') : 'var(--border-subtle)',
+                  backgroundColor: isSelected ? 'var(--bg-white)' : 'var(--bg-cream)',
+                  color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  boxShadow: isSelected ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                {isSelected ? '● ' : ''}{p.title}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* ========================================================================= */}
       {/* 3. COMPACT PROJECT HEADER                                                 */}
@@ -662,95 +885,254 @@ export default function InsightReportPage({ selectedInnoId, setActiveTab, setSel
       )}
 
       {/* ========================================================================= */}
-      {/* 4. INSIGHT OVERVIEW (REAL DATABASE STATS)                                 */}
+      {/* 4. REAL DATABASE TELEMETRY & STRATEGIC ANALYTICS (PHASE 7)               */}
       {/* ========================================================================= */}
-      <section style={{ marginBottom: '3rem' }}>
-        <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div className="editorial-mono-label" style={{ color: 'var(--coral)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-            <Activity size={14} /> INSIGHT OVERVIEW (REAL TELEMETRY)
+      <section style={{ marginBottom: '3.5rem' }}>
+        <div style={{ marginBottom: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div>
+            <div className="editorial-mono-label" style={{ color: 'var(--coral)', display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.2rem' }}>
+              <Activity size={14} /> PHASE 7 // REAL SUPABASE TELEMETRY & ANALYTICS
+            </div>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0 }}>
+              Project Performance & Community Engagement
+            </h2>
           </div>
-          <span className="mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-            Direct aggregation of database signals
-          </span>
+          <div className="mono" style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', backgroundColor: 'var(--bg-white)', padding: '4px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+            Live Supabase Signals • Zero Mock Data
+          </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1.25rem' }}>
-          {/* Metric 1: Readiness Score */}
-          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--coral)' }}>
-            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--coral)', marginBottom: '0.45rem' }}>
-              PROJECT READINESS
+        {/* 4.1 Primary Real Supabase Metric Cards (8 Core Indicators) */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+          {/* Views */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--coral)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--coral)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <Eye size={11} /> VIEWS
             </div>
-            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.2rem', fontWeight: 800, lineHeight: 1 }}>
-              <span style={{ color: 'var(--coral)' }}>{overview.readiness_score}</span> <span style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>/ 100</span>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--text-primary)' }}>
+              {projectAnalytics?.views || 0}
             </div>
-            <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.45rem' }}>
-              Feasibility & completeness
-            </div>
-          </div>
-
-          {/* Metric 2: Community Interest */}
-          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--teal)' }}>
-            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--teal)', marginBottom: '0.45rem' }}>
-              COMMUNITY INTEREST
-            </div>
-            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.2rem', fontWeight: 800, lineHeight: 1 }}>
-              <span style={{ color: 'var(--teal)' }}>{overview.community_interest_pct}%</span>
-            </div>
-            <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.45rem' }}>
-              Interaction velocity
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Unique impressions
             </div>
           </div>
 
-          {/* Metric 3: Review Sentiment */}
-          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--periwinkle)' }}>
-            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--periwinkle)', marginBottom: '0.45rem' }}>
-              REVIEW SENTIMENT
+          {/* Upvotes */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--teal)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--teal)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <ThumbsUp size={11} /> UPVOTES
             </div>
-            <div style={{ fontSize: '1.15rem', fontWeight: 800, lineHeight: 1.3, color: 'var(--text-primary)', minHeight: '36px', display: 'flex', alignItems: 'center' }}>
-              {overview.sentiment_label}
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--teal)' }}>
+              {projectAnalytics?.upvotes || 0}
             </div>
-            <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.45rem' }}>
-              {reviews.length > 0 ? `${reviews.length} validator scores` : 'No reviews recorded'}
-            </div>
-          </div>
-
-          {/* Metric 4: Reviews Count */}
-          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--lavender)' }}>
-            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--lavender)', marginBottom: '0.45rem' }}>
-              PEER REVIEWS
-            </div>
-            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.2rem', fontWeight: 800, lineHeight: 1 }}>
-              {overview.reviews_count}
-            </div>
-            <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.45rem' }}>
-              Validated evaluations
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Positive endorsements
             </div>
           </div>
 
-          {/* Metric 5: Likes Count */}
-          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--coral)' }}>
-            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--coral)', marginBottom: '0.45rem' }}>
-              COMMUNITY LIKES
+          {/* Downvotes */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--coral)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--coral)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <ThumbsDown size={11} /> DOWNVOTES
             </div>
-            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.2rem', fontWeight: 800, lineHeight: 1 }}>
-              {overview.likes_count}
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--coral)' }}>
+              {projectAnalytics?.downvotes || 0}
             </div>
-            <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.45rem' }}>
-              Upvotes on ledger
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Critical counter-votes
             </div>
           </div>
 
-          {/* Metric 6: Helpful Reviews */}
-          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderTop: '4px solid var(--green)' }}>
-            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--green)', marginBottom: '0.45rem' }}>
-              HELPFUL REVIEWS
+          {/* Reviews */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--periwinkle)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--periwinkle)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <MessageSquare size={11} /> REVIEWS
             </div>
-            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.2rem', fontWeight: 800, lineHeight: 1 }}>
-              {overview.helpful_reviews_count}
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--periwinkle)' }}>
+              {projectAnalytics?.reviews_count || 0}
             </div>
-            <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.45rem' }}>
-              Constructive peer votes
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Peer evaluations
             </div>
+          </div>
+
+          {/* Average Rating */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--apricot)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--apricot)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <Star size={11} /> AVG RATING
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--apricot)' }}>
+              {projectAnalytics?.average_rating ? `${projectAnalytics.average_rating.toFixed(1)}★` : '—'}
+            </div>
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Score out of 5.0
+            </div>
+          </div>
+
+          {/* Helpful Reviews */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--teal)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--teal)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <UserCheck size={11} /> HELPFUL REVS
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--teal)' }}>
+              {projectAnalytics?.helpful_review_count || 0}
+            </div>
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              High-signal critiques
+            </div>
+          </div>
+
+          {/* Suggestions */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--lavender)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--lavender)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <Lightbulb size={11} /> SUGGESTIONS
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--lavender)' }}>
+              {projectAnalytics?.suggestions_count || 0}
+            </div>
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Feature proposals
+            </div>
+          </div>
+
+          {/* Followers */}
+          <div className="editorial-card" style={{ padding: '1.25rem 1rem', backgroundColor: 'var(--bg-white)', borderTop: '3px solid var(--coral)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.64rem', color: 'var(--coral)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <Users size={11} /> FOLLOWERS
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '1.85rem', fontWeight: 800, lineHeight: 1, color: 'var(--coral)' }}>
+              {projectAnalytics?.followers_count || 0}
+            </div>
+            <div className="mono" style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Subscribed innovators
+            </div>
+          </div>
+        </div>
+
+        {/* 4.2 Calculated Strategic Analytics (Formulas & Derived Indices) */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem', marginBottom: '2rem' }}>
+          {/* Calculated: Engagement Rate */}
+          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderLeft: '4px solid var(--coral)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--coral)', marginBottom: '0.35rem' }}>
+              CALCULATED // ENGAGEMENT RATE
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.4rem', fontWeight: 800, lineHeight: 1, color: 'var(--coral)' }}>
+              {projectAnalytics?.engagement_rate !== undefined ? `${projectAnalytics.engagement_rate}%` : '0%'}
+            </div>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0.45rem 0 0 0', lineHeight: 1.4 }}>
+              Ratio of total interactions (votes, reviews, suggestions, follows) relative to page views.
+            </p>
+          </div>
+
+          {/* Calculated: Vote Ratio */}
+          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderLeft: '4px solid var(--teal)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--teal)', marginBottom: '0.35rem' }}>
+              CALCULATED // VOTE RATIO
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.4rem', fontWeight: 800, lineHeight: 1, color: 'var(--teal)' }}>
+              {projectAnalytics?.vote_ratio !== undefined ? `${projectAnalytics.vote_ratio}%` : '100%'}
+            </div>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0.45rem 0 0 0', lineHeight: 1.4 }}>
+              Percentage of upvotes versus total community votes cast on the public ledger.
+            </p>
+          </div>
+
+          {/* Calculated: Review Score */}
+          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderLeft: '4px solid var(--periwinkle)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--periwinkle)', marginBottom: '0.35rem' }}>
+              CALCULATED // REVIEW SCORE
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.4rem', fontWeight: 800, lineHeight: 1, color: 'var(--periwinkle)' }}>
+              {projectAnalytics?.review_score || 0}<span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>/100</span>
+            </div>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0.45rem 0 0 0', lineHeight: 1.4 }}>
+              Normalized composite rating factoring average evaluation and total review volume.
+            </p>
+          </div>
+
+          {/* Calculated: Community Engagement */}
+          <div className="editorial-card" style={{ padding: '1.5rem', backgroundColor: 'var(--bg-white)', borderLeft: '4px solid var(--lavender)' }}>
+            <div className="editorial-mono-label" style={{ fontSize: '0.68rem', color: 'var(--lavender)', marginBottom: '0.35rem' }}>
+              CALCULATED // COMMUNITY ENGAGEMENT
+            </div>
+            <div style={{ fontFamily: 'var(--font-editorial)', fontSize: '2.4rem', fontWeight: 800, lineHeight: 1, color: 'var(--lavender)' }}>
+              {projectAnalytics?.community_engagement || 0} <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>pts</span>
+            </div>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0.45rem 0 0 0', lineHeight: 1.4 }}>
+              Weighted engagement velocity index aggregating votes, detailed reviews, suggestions, and follows.
+            </p>
+          </div>
+        </div>
+
+        {/* 4.3 Visual Analytics & Charts Section (With "Not enough data yet" Fallbacks) */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}>
+          {/* Chart 1: Rating Distribution */}
+          <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div className="editorial-mono-label" style={{ color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Star size={13} color="var(--apricot)" /> RATING DISTRIBUTION
+              </div>
+              <span className="mono" style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                {projectAnalytics?.reviews_count || 0} reviews
+              </span>
+            </div>
+            <RatingDistributionChart 
+              distribution={projectAnalytics?.rating_distribution} 
+              totalReviews={projectAnalytics?.reviews_count || 0}
+              averageRating={projectAnalytics?.average_rating || 0}
+            />
+          </div>
+
+          {/* Chart 2: Vote Ratio Meter */}
+          <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div className="editorial-mono-label" style={{ color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <ThumbsUp size={13} color="var(--teal)" /> VOTE RATIO METER
+              </div>
+              <span className="mono" style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                {projectAnalytics?.total_votes || 0} votes cast
+              </span>
+            </div>
+            <VoteRatioChart 
+              upvotes={projectAnalytics?.upvotes || 0}
+              downvotes={projectAnalytics?.downvotes || 0}
+              totalVotes={projectAnalytics?.total_votes || 0}
+              voteRatio={projectAnalytics?.vote_ratio || 0}
+            />
+          </div>
+
+          {/* Chart 3: Community Engagement Mix */}
+          <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div className="editorial-mono-label" style={{ color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <BarChart2 size={13} color="var(--coral)" /> ENGAGEMENT MIX
+              </div>
+              <span className="mono" style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                Channel breakdown
+              </span>
+            </div>
+            <EngagementMixChart 
+              upvotes={projectAnalytics?.upvotes || 0}
+              downvotes={projectAnalytics?.downvotes || 0}
+              reviews={projectAnalytics?.reviews_count || 0}
+              suggestions={projectAnalytics?.suggestions_count || 0}
+              followers={projectAnalytics?.followers_count || 0}
+            />
+          </div>
+
+          {/* Chart 4: Activity Timeline Trend */}
+          <div className="editorial-card" style={{ padding: '1.75rem', backgroundColor: 'var(--bg-white)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div className="editorial-mono-label" style={{ color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <TrendingUp size={13} color="var(--periwinkle)" /> ACTIVITY TIMELINE
+              </div>
+              <span className="mono" style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                Temporal trend
+              </span>
+            </div>
+            <ActivityTimelineChart 
+              timeline={projectAnalytics?.activity_timeline}
+            />
           </div>
         </div>
       </section>

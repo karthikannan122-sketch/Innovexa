@@ -1,119 +1,158 @@
+﻿@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,700;1,400;1,700&family=DM+Serif+Display:ital@0;1&display=swap');
+@import "tailwindcss";
+
 /* ==========================================================================
    INNOVEXA — PREMIUM EDITORIAL INNOVATION PLATFORM
-   Design System & Tokens (Editorial Luxury + Soft Futuristic + Startup System)
+   Design System v3 — Instrument Serif + Manrope + IBM Plex Mono
+   Light editorial theme. Inspired by premium innovation culture.
    ========================================================================== */
 
+/* ── Google Fonts (fallback if not loaded via HTML) ── */
+
+
 :root {
-  /* 1. Core Color System — Surfaces */
-  --bg-ivory: #F6F3EE;           /* Warm Soft Ivory (Primary Canvas) */
-  --bg-cream: #EEE9E1;           /* Soft Cream (Secondary Background) */
-  --bg-white: #FCFBF8;           /* Warm White (Card Surface) */
-  --bg-dark: #20212A;            /* Dark Surface (Modern Dark Sidebar & Feature Panels) */
-  --bg-dark-secondary: #2B2D38;  /* Dark Secondary */
-  --bg-dark-hover: #343744;      /* Dark Hover State */
+  /* ── 1. SURFACES ── */
+  --bg-primary:     #F7F4EE;   /* Warm ivory canvas */
+  --bg-secondary:   #FCFAF7;   /* Soft white card */
+  --bg-tertiary:    #EEE9E0;   /* Cream secondary */
+  --bg-dark:        #171B2B;   /* Deep navy dark panels */
+  --bg-dark-raised: #1E2236;
+  --bg-dark-hover:  #252840;
 
-  /* Legacy aliases for backward compatibility */
-  --paper-base: var(--bg-ivory);
-  --paper-subtle: var(--bg-cream);
-  --paper-raised: var(--bg-white);
-  --paper-sunken: #E4DED3;
+  /* Legacy aliases — keeps existing components working */
+  --bg-ivory:           var(--bg-primary);
+  --bg-cream:           var(--bg-tertiary);
+  --bg-white:           var(--bg-secondary);
+  --bg-dark-secondary:  var(--bg-dark-raised);
+  --paper-base:         var(--bg-primary);
+  --paper-subtle:       var(--bg-tertiary);
+  --paper-raised:       var(--bg-secondary);
+  --paper-sunken:       #E4DED3;
 
-  /* 2. Text System */
-  --text-primary: #24242B;       /* Deep Charcoal */
-  --text-secondary: #6D6B73;     /* Muted Slate */
-  --text-muted: #94929C;         /* Faint Metadata */
-  --text-inverse: #FCFBF8;       /* Warm White on Dark */
-  --text-inverse-muted: #A3A1AC; /* Muted on Dark */
+  /* ── 2. TEXT ── */
+  --text-primary:       #171925;   /* Deep navy-black */
+  --text-secondary:     #5D6170;   /* Muted slate */
+  --text-muted:         #9097A8;   /* Faint metadata */
+  --text-inverse:       #F7F4EE;   /* On dark surfaces */
+  --text-inverse-muted: #8B90A0;   /* Muted on dark */
 
-  /* Legacy text aliases */
-  --ink-charcoal: var(--text-primary);
-  --ink-body: var(--text-primary);
-  --slate-muted: var(--text-secondary);
-  --slate-faint: var(--text-muted);
+  /* Legacy */
+  --ink-charcoal:  var(--text-primary);
+  --ink-body:      var(--text-primary);
+  --slate-muted:   var(--text-secondary);
+  --slate-faint:   var(--text-muted);
 
-  /* 3. Hairline Rules & Crisp Borders */
-  --border-hairline: rgba(36, 36, 43, 0.08);
-  --border-subtle: rgba(36, 36, 43, 0.12);
-  --border-medium: rgba(36, 36, 43, 0.20);
-  --border-strong: #24242B;
-  --border-dark: rgba(255, 255, 255, 0.10);
-  --border-dark-strong: rgba(255, 255, 255, 0.20);
+  /* ── 3. BORDERS ── */
+  --border-hairline: rgba(23, 25, 37, 0.07);
+  --border-subtle:   rgba(23, 25, 37, 0.11);
+  --border-medium:   rgba(23, 25, 37, 0.18);
+  --border-strong:   rgba(23, 25, 37, 0.35);
+  --border-dark:     rgba(255, 255, 255, 0.10);
+  --border-dark-strong: rgba(255, 255, 255, 0.18);
+  --border-paper:    var(--border-subtle);
 
-  /* Legacy border aliases */
-  --border-paper: var(--border-subtle);
+  /* ── 4. ACCENT PALETTE ── */
+  /* CORAL — CREATE / LAUNCH */
+  --coral:        #EA6678;
+  --coral-light:  #F5A9B3;
+  --coral-pale:   #FEF0F2;
+  --coral-glow:   rgba(234, 102, 120, 0.20);
 
-  /* 4. Modular Accent Palette */
-  --coral: #E76F82;              /* Primary Accent - Coral Rose */
-  --coral-light: #F3A3AD;        /* Light Coral */
-  --coral-glow: rgba(231, 111, 130, 0.25);
-  
-  --periwinkle: #7186D8;         /* Product / Technology - Soft Periwinkle Blue */
-  --lavender: #9B8AE5;           /* Idea - Soft Lavender */
-  --teal: #58B8AD;               /* Startup - Fresh Teal */
-  --apricot: #F0A45D;            /* Community - Warm Apricot */
-  --rose-pink: #D86B9A;          /* Insights - Rose Pink */
-  --green: #69B89A;              /* Success / Validated - Soft Green */
-  --amber: #E9B45B;              /* Warning - Warm Amber */
-  --red: #D96666;                /* Error - Muted Red */
+  /* ELECTRIC BLUE — DISCOVER */
+  --blue:         #617BEA;
+  --blue-light:   #A3B3F5;
+  --blue-pale:    #EEF1FD;
+  --blue-glow:    rgba(97, 123, 234, 0.18);
 
-  /* Category in-system maps */
-  --ink-ai: var(--lavender);
-  --ink-ai-light: #F5F2FC;
-  --ink-devtools: var(--periwinkle);
-  --ink-devtools-light: #F0F3FC;
-  --ink-health: var(--teal);
-  --ink-health-light: #EEF8F6;
-  --ink-environment: var(--green);
-  --ink-environment-light: #EFF7F3;
-  --ink-edu: var(--apricot);
-  --ink-edu-light: #FDF6EE;
-  --ink-fintech: var(--periwinkle);
-  --ink-fintech-light: #F0F3FC;
-  --ink-saas: var(--rose-pink);
-  --ink-saas-light: #FAF0F5;
-  --ink-security: var(--coral);
-  --ink-security-light: #FDF1F3;
+  /* SOFT TEAL — VALIDATE */
+  --teal:         #57B9AD;
+  --teal-light:   #96D4CE;
+  --teal-pale:    #EBF7F6;
+  --teal-glow:    rgba(87, 185, 173, 0.18);
 
-  /* 5. Typography Three-Engine System */
-  --font-editorial: 'Playfair Display', 'Bodoni Moda', Georgia, serif;
-  --font-ui: 'Sora', 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'Space Mono', 'Courier New', monospace;
-  
-  /* Legacy font aliases */
-  --font-serif-body: var(--font-editorial);
-  --font-sans: var(--font-ui);
-  --font-display: var(--font-editorial);
+  /* LAVENDER — CONNECT */
+  --lavender:     #9C88D8;
+  --lavender-light: #C4B8EC;
+  --lavender-pale:  #F2EFFB;
+  --lavender-glow:  rgba(156, 136, 216, 0.18);
 
-  /* 6. Shadows & Elevations */
-  --shadow-sm: 0 1px 3px rgba(36, 36, 43, 0.04), 0 1px 2px rgba(36, 36, 43, 0.02);
-  --shadow-md: 0 4px 16px rgba(36, 36, 43, 0.06), 0 1px 3px rgba(36, 36, 43, 0.03);
-  --shadow-lg: 0 12px 32px rgba(36, 36, 43, 0.08), 0 2px 6px rgba(36, 36, 43, 0.04);
-  --shadow-dark: 0 16px 40px rgba(0, 0, 0, 0.28);
-  --shadow-modal: 0 24px 64px rgba(36, 36, 43, 0.18), 0 4px 16px rgba(36, 36, 43, 0.08);
+  /* WARM AMBER — INSIGHTS */
+  --amber:        #E8B35B;
+  --amber-light:  #F2CE94;
+  --amber-pale:   #FDF5E6;
+  --amber-glow:   rgba(232, 179, 91, 0.18);
 
-  /* Legacy shadow aliases */
+  /* DEEP GREEN — SUCCESS */
+  --green:        #52B788;
+  --green-pale:   #EDFAF3;
+  --green-glow:   rgba(82, 183, 136, 0.18);
+
+  /* MUTED RED — ERROR */
+  --red:          #D96666;
+  --red-pale:     #FDEEEE;
+
+  /* Legacy color aliases */
+  --periwinkle:   var(--blue);
+  --apricot:      var(--amber);
+
+  /* Category inks */
+  --ink-ai:           var(--lavender);
+  --ink-ai-light:     var(--lavender-pale);
+  --ink-devtools:     var(--blue);
+  --ink-devtools-light: var(--blue-pale);
+  --ink-health:       var(--teal);
+  --ink-health-light: var(--teal-pale);
+  --ink-environment:  var(--green);
+  --ink-environment-light: var(--green-pale);
+  --ink-edu:          var(--amber);
+  --ink-edu-light:    var(--amber-pale);
+  --ink-fintech:      var(--blue);
+  --ink-fintech-light: var(--blue-pale);
+  --ink-saas:         var(--coral);
+  --ink-saas-light:   var(--coral-pale);
+  --ink-security:     var(--lavender);
+  --ink-security-light: var(--lavender-pale);
+
+  /* ── 5. TYPOGRAPHY ── */
+  --font-display:   'Instrument Serif', 'DM Serif Display', Georgia, serif;
+  --font-editorial: var(--font-display);
+  --font-serif-body: var(--font-display);
+  --font-ui:        'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans:      var(--font-ui);
+  --font-mono:      'IBM Plex Mono', 'Courier New', monospace;
+
+  /* ── 6. SHADOWS ── */
+  --shadow-xs:  0 1px 2px rgba(23, 25, 37, 0.04);
+  --shadow-sm:  0 1px 4px rgba(23, 25, 37, 0.05), 0 1px 2px rgba(23, 25, 37, 0.03);
+  --shadow-md:  0 4px 16px rgba(23, 25, 37, 0.07), 0 1px 4px rgba(23, 25, 37, 0.04);
+  --shadow-lg:  0 12px 32px rgba(23, 25, 37, 0.09), 0 2px 8px rgba(23, 25, 37, 0.05);
+  --shadow-xl:  0 20px 48px rgba(23, 25, 37, 0.12), 0 4px 12px rgba(23, 25, 37, 0.06);
+  --shadow-dark: 0 16px 48px rgba(0, 0, 0, 0.30);
+  --shadow-modal: 0 24px 72px rgba(23, 25, 37, 0.16), 0 4px 16px rgba(23, 25, 37, 0.08);
+
+  /* Legacy */
   --shadow-paper-flat: var(--shadow-sm);
-  --shadow-paper: var(--shadow-md);
+  --shadow-paper:      var(--shadow-md);
   --shadow-paper-hover: var(--shadow-lg);
 
-  /* 7. Radii */
-  --radius-xs: 4px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 18px;
-  --radius-xl: 24px;
+  /* ── 7. RADII ── */
+  --radius-xs:   3px;
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   16px;
+  --radius-xl:   22px;
   --radius-full: 9999px;
 
-  /* 8. Layout Dimensions */
-  --topbar-height: 64px;
-  --sidebar-width: 260px;
+  /* ── 8. LAYOUT ── */
+  --topbar-height: 60px;
+  --sidebar-width: 220px;
 }
 
 /* ==========================================================================
-   Base Reset & Defaults
+   BASE RESET
    ========================================================================== */
 
-* {
+*, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
@@ -121,7 +160,7 @@
 
 html {
   font-size: 16px;
-  background-color: var(--bg-ivory);
+  background-color: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-ui);
   scroll-behavior: smooth;
@@ -130,9 +169,7 @@ html {
 }
 
 body {
-  background-color: var(--bg-ivory);
-  background-image: radial-gradient(rgba(36, 36, 43, 0.035) 1px, transparent 0);
-  background-size: 24px 24px;
+  background-color: var(--bg-primary);
   min-height: 100vh;
   line-height: 1.6;
   color: var(--text-primary);
@@ -146,74 +183,92 @@ a {
 }
 
 /* ==========================================================================
-   Typography System
-   Formula: Space Mono Technical Label -> Massive Editorial Serif -> Sora UI
+   TYPOGRAPHY SYSTEM
    ========================================================================== */
 
-h1, h2, h3, h4, h5, h6, .editorial-heading {
-  font-family: var(--font-editorial);
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
   color: var(--text-primary);
-  font-weight: 700;
-  line-height: 1.12;
-  letter-spacing: -0.025em;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  font-weight: 400;
 }
 
+/* Display — oversized hero serif */
 .editorial-hero {
-  font-family: var(--font-editorial);
-  font-size: clamp(3.4rem, 7vw, 5.8rem);
-  font-weight: 800;
-  line-height: 0.98;
-  letter-spacing: -0.04em;
+  font-family: var(--font-display);
+  font-size: clamp(3.5rem, 7.5vw, 7rem);
+  font-weight: 400;
+  line-height: 0.95;
+  letter-spacing: -0.03em;
   color: var(--text-primary);
 }
 
+/* Large section headings */
+.editorial-heading {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4vw, 3.5rem);
+  font-weight: 400;
+  line-height: 1.0;
+  letter-spacing: -0.025em;
+  color: var(--text-primary);
+}
+
+/* Medium headings */
+.editorial-subheading {
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 2.5vw, 2.2rem);
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+}
+
+/* Italic serif accent */
 .editorial-serif-italic {
-  font-family: var(--font-editorial);
+  font-family: var(--font-display);
   font-style: italic;
   font-weight: 400;
 }
 
-.editorial-sans-bold {
-  font-family: var(--font-ui);
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  text-transform: uppercase;
-}
-
-.editorial-lead {
-  font-family: var(--font-editorial);
-  font-size: 1.35rem;
-  line-height: 1.45;
-  color: var(--text-primary);
-}
-
-.editorial-pullquote {
-  font-family: var(--font-editorial);
-  font-size: 1.85rem;
-  line-height: 1.3;
-  font-style: italic;
-  color: var(--text-primary);
-  position: relative;
-  padding-left: 1.75rem;
-  border-left: 3.5px solid var(--coral);
-  margin: 1.75rem 0;
-}
-
-.editorial-index, .editorial-mono-label, .label-mono {
+/* Monospace technical labels */
+.editorial-mono-label,
+.editorial-index,
+.label-mono {
   font-family: var(--font-mono);
-  font-size: 0.74rem;
-  letter-spacing: 0.12em;
+  font-size: 0.70rem;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
   color: var(--text-secondary);
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .mono {
   font-family: var(--font-mono);
 }
 
+/* Pull quote */
+.editorial-pullquote {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  line-height: 1.3;
+  font-style: italic;
+  color: var(--text-primary);
+  position: relative;
+  padding-left: 1.5rem;
+  border-left: 2px solid var(--coral);
+  margin: 1.5rem 0;
+}
+
+/* Body lead */
+.editorial-lead {
+  font-family: var(--font-ui);
+  font-size: 1.15rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
 /* ==========================================================================
-   Layout Containers & Grids
+   LAYOUT
    ========================================================================== */
 
 .workspace-container {
@@ -226,23 +281,27 @@ h1, h2, h3, h4, h5, h6, .editorial-heading {
 .editorial-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 1.75rem;
+  gap: 1.5rem;
 }
 
 /* ==========================================================================
-   Cards & Surfaces
+   CARDS & SURFACES
    ========================================================================== */
 
-.editorial-card, .ledger-card {
-  background-color: var(--bg-white);
+.editorial-card,
+.ledger-card {
+  background-color: var(--bg-secondary);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.22s ease;
   position: relative;
 }
 
-.editorial-card:hover, .ledger-card:hover {
+.editorial-card:hover,
+.ledger-card:hover {
   box-shadow: var(--shadow-md);
   transform: translateY(-2px);
   border-color: var(--border-medium);
@@ -258,51 +317,39 @@ h1, h2, h3, h4, h5, h6, .editorial-heading {
   overflow: hidden;
 }
 
-.editorial-card-dark h1,
-.editorial-card-dark h2,
-.editorial-card-dark h3,
-.editorial-card-dark strong {
-  color: var(--text-inverse);
-}
-
 /* ==========================================================================
-   Buttons & Interactive Elements
+   BUTTONS
    ========================================================================== */
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
   font-family: var(--font-ui);
   font-weight: 600;
-  font-size: 0.9rem;
-  padding: 0.65rem 1.35rem;
+  font-size: 0.875rem;
+  padding: 0.6rem 1.25rem;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   text-decoration: none;
   line-height: 1.2;
   user-select: none;
+  letter-spacing: 0.01em;
 }
 
-.btn:hover {
-  transform: translateY(-1px);
-}
-
-.btn:active {
-  transform: translateY(0);
-}
+.btn:hover   { transform: translateY(-1px); }
+.btn:active  { transform: translateY(0); }
 
 .btn-primary {
   background-color: var(--text-primary);
-  color: var(--bg-ivory);
+  color: var(--bg-primary);
   border-color: var(--text-primary);
 }
-
 .btn-primary:hover {
-  background-color: #15151A;
+  background-color: #0D0F1A;
   box-shadow: var(--shadow-md);
 }
 
@@ -311,22 +358,39 @@ h1, h2, h3, h4, h5, h6, .editorial-heading {
   color: #FFFFFF;
   border-color: var(--coral);
 }
-
 .btn-coral:hover {
-  background-color: #E25B71;
+  background-color: #D94F63;
   box-shadow: 0 4px 16px var(--coral-glow);
 }
 
-.btn-secondary {
-  background-color: var(--bg-white);
-  color: var(--text-primary);
-  border-color: var(--border-medium);
-  box-shadow: var(--shadow-sm);
+.btn-blue {
+  background-color: var(--blue);
+  color: #FFFFFF;
+  border-color: var(--blue);
+}
+.btn-blue:hover {
+  background-color: #4D66D8;
+  box-shadow: 0 4px 16px var(--blue-glow);
 }
 
+.btn-dark {
+  background-color: var(--bg-dark);
+  color: var(--text-inverse);
+  border-color: var(--bg-dark);
+}
+.btn-dark:hover {
+  background-color: var(--bg-dark-raised);
+}
+
+.btn-secondary {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-color: var(--border-medium);
+  box-shadow: var(--shadow-xs);
+}
 .btn-secondary:hover {
-  background-color: var(--bg-cream);
-  border-color: var(--text-primary);
+  background-color: var(--bg-tertiary);
+  border-color: var(--border-strong);
 }
 
 .btn-outline {
@@ -334,9 +398,9 @@ h1, h2, h3, h4, h5, h6, .editorial-heading {
   color: var(--text-primary);
   border-color: var(--border-medium);
 }
-
 .btn-outline:hover {
-  background-color: var(--bg-cream);
+  background-color: var(--bg-tertiary);
+  border-color: var(--border-strong);
 }
 
 .btn-ghost {
@@ -344,206 +408,318 @@ h1, h2, h3, h4, h5, h6, .editorial-heading {
   color: var(--text-secondary);
   border-color: transparent;
 }
-
 .btn-ghost:hover {
-  background-color: rgba(36, 36, 43, 0.05);
+  background-color: rgba(23, 25, 37, 0.05);
   color: var(--text-primary);
 }
 
 .btn-sm {
   font-size: 0.78rem;
-  padding: 0.4rem 0.85rem;
+  padding: 0.38rem 0.8rem;
   border-radius: var(--radius-xs);
 }
-
 .btn-lg {
-  font-size: 1.05rem;
-  padding: 0.95rem 2rem;
+  font-size: 1rem;
+  padding: 0.85rem 1.85rem;
   border-radius: var(--radius-md);
   font-weight: 700;
 }
 
 /* ==========================================================================
-   Form Controls
+   FORM CONTROLS
    ========================================================================== */
 
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-  margin-bottom: 1.35rem;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
 }
 
 .form-label {
   font-family: var(--font-mono);
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--text-primary);
 }
 
-.form-input, .form-textarea, .form-select, input[type="text"], input[type="email"], input[type="password"], textarea, select {
+.form-input,
+.form-textarea,
+.form-select,
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="url"],
+textarea,
+select {
   font-family: var(--font-ui);
-  font-size: 0.94rem;
+  font-size: 0.925rem;
   color: var(--text-primary);
-  background-color: var(--bg-white);
-  border: 1px solid var(--border-medium);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 0.75rem 1rem;
-  transition: all 0.2s ease;
+  padding: 0.72rem 1rem;
+  transition: all 0.18s ease;
   outline: none;
   width: 100%;
 }
 
-.form-input:focus, .form-textarea:focus, .form-select:focus, input:focus, textarea:focus, select:focus {
+.form-input:focus,
+.form-textarea:focus,
+.form-select:focus,
+input:focus,
+textarea:focus,
+select:focus {
   border-color: var(--coral);
   box-shadow: 0 0 0 3px var(--coral-glow);
   background-color: #FFFFFF;
 }
 
-.form-textarea, textarea {
-  min-height: 110px;
+.form-textarea,
+textarea {
+  min-height: 108px;
   resize: vertical;
   line-height: 1.5;
 }
 
 /* ==========================================================================
-   Category Inks & Tags
+   TAGS & CATEGORY CHIPS
    ========================================================================== */
 
 .category-tag {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.2rem 0.65rem;
+  gap: 0.3rem;
+  padding: 0.18rem 0.6rem;
   border-radius: var(--radius-full);
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  font-weight: 700;
+  font-size: 0.68rem;
+  font-weight: 500;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
-.tag-ink-ai { background-color: #F5F2FC; color: #7B68D6; border: 1px solid rgba(155, 138, 229, 0.3); }
-.tag-ink-devtools { background-color: #F0F3FC; color: #5B72CA; border: 1px solid rgba(113, 134, 216, 0.3); }
-.tag-ink-health { background-color: #EEF8F6; color: #3F9E93; border: 1px solid rgba(88, 184, 173, 0.3); }
-.tag-ink-environment { background-color: #EFF7F3; color: #4B9E7F; border: 1px solid rgba(105, 184, 154, 0.3); }
-.tag-ink-edu { background-color: #FDF6EE; color: #D48439; border: 1px solid rgba(240, 164, 93, 0.3); }
-.tag-ink-fintech { background-color: #F0F3FC; color: #5B72CA; border: 1px solid rgba(113, 134, 216, 0.3); }
-.tag-ink-saas { background-color: #FAF0F5; color: #BF4E80; border: 1px solid rgba(216, 107, 154, 0.3); }
-.tag-ink-security { background-color: #FDF1F3; color: #D1556B; border: 1px solid rgba(231, 111, 130, 0.3); }
+.tag-ink-ai          { background: var(--lavender-pale); color: #6B52C2; border: 1px solid rgba(156,136,216,0.25); }
+.tag-ink-devtools    { background: var(--blue-pale);     color: #3A57D8; border: 1px solid rgba(97,123,234,0.25); }
+.tag-ink-health      { background: var(--teal-pale);     color: #2E8F85; border: 1px solid rgba(87,185,173,0.25); }
+.tag-ink-environment { background: var(--green-pale);    color: #2D8A5D; border: 1px solid rgba(82,183,136,0.25); }
+.tag-ink-edu         { background: var(--amber-pale);    color: #B07A1A; border: 1px solid rgba(232,179,91,0.25); }
+.tag-ink-fintech     { background: var(--blue-pale);     color: #3A57D8; border: 1px solid rgba(97,123,234,0.25); }
+.tag-ink-saas        { background: var(--coral-pale);    color: #C03048; border: 1px solid rgba(234,102,120,0.25); }
+.tag-ink-security    { background: var(--lavender-pale); color: #6B52C2; border: 1px solid rgba(156,136,216,0.25); }
 
 /* ==========================================================================
-   Filter Pills & Chips
+   FILTER PILLS
    ========================================================================== */
 
 .filter-chip-group {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.45rem;
   flex-wrap: wrap;
   align-items: center;
 }
 
 .filter-chip {
   font-family: var(--font-ui);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-weight: 600;
-  padding: 0.45rem 1rem;
+  padding: 0.4rem 0.95rem;
   border-radius: var(--radius-full);
-  border: 1px solid var(--border-medium);
-  background-color: var(--bg-white);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-secondary);
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
+  letter-spacing: 0.01em;
 }
 
 .filter-chip:hover {
-  border-color: var(--text-primary);
+  border-color: var(--border-strong);
   color: var(--text-primary);
+  background-color: var(--bg-tertiary);
 }
 
 .filter-chip.active {
   background-color: var(--text-primary);
-  color: var(--bg-ivory);
+  color: var(--bg-primary);
   border-color: var(--text-primary);
 }
 
 /* ==========================================================================
-   Status Badges & Progress Bars
+   GLASS HEADER (for AppLayout topbar)
    ========================================================================== */
 
-.progress-track {
-  width: 100%;
-  height: 6px;
-  background-color: rgba(36, 36, 43, 0.08);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  position: relative;
-}
-
-.progress-track-dark {
-  background-color: rgba(255, 255, 255, 0.12);
-}
-
-.progress-fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+.glass-header {
+  background-color: rgba(247, 244, 238, 0.94);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 /* ==========================================================================
-   Command Palette & Modal Backdrop
+   TOAST NOTIFICATIONS
    ========================================================================== */
 
-.modal-backdrop {
+.toast-stack {
   position: fixed;
-  inset: 0;
-  background-color: rgba(32, 33, 42, 0.65);
-  backdrop-filter: blur(8px);
-  z-index: 9990;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 9999;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-  animation: fadeIn 0.2s ease;
+  flex-direction: column;
+  gap: 0.6rem;
+  pointer-events: none;
 }
 
-.command-dialog {
-  background-color: var(--bg-white);
-  border: 1px solid var(--border-medium);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-modal);
+.toast-message {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem 1.15rem;
+  background-color: var(--bg-dark);
+  color: var(--text-inverse);
+  border-radius: var(--radius-md);
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  font-weight: 500;
+  box-shadow: var(--shadow-dark);
+  pointer-events: auto;
+  max-width: 380px;
+  animation: toastIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toast-message.success { border-left: 3px solid var(--green); }
+.toast-message.warning { border-left: 3px solid var(--amber); }
+.toast-message.error   { border-left: 3px solid var(--red); }
+.toast-message.info    { border-left: 3px solid var(--blue); }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ==========================================================================
+   STATUS BADGES
+   ========================================================================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 0.67rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.badge-draft      { background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+.badge-published  { background: var(--blue-pale);   color: #3A57D8; border: 1px solid rgba(97,123,234,0.2); }
+.badge-validated  { background: var(--teal-pale);   color: #2E8F85; border: 1px solid rgba(87,185,173,0.2); }
+.badge-launched   { background: var(--coral-pale);  color: #C03048; border: 1px solid rgba(234,102,120,0.2); }
+
+/* ==========================================================================
+   NAVIGATION SIDEBAR
+   ========================================================================== */
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.52rem 1rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-size: 0.835rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: all 0.16s ease;
+  cursor: pointer;
+  position: relative;
+  letter-spacing: 0.01em;
+}
+
+.sidebar-nav-item:hover {
+  color: var(--text-primary);
+  background-color: rgba(23, 25, 37, 0.04);
+}
+
+.sidebar-nav-item.active {
+  color: var(--coral);
+  font-weight: 600;
+  background-color: var(--coral-pale);
+}
+
+.sidebar-nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 2px;
+  background-color: var(--coral);
+  border-radius: 0 2px 2px 0;
+}
+
+/* ==========================================================================
+   SECTION DIVIDER
+   ========================================================================== */
+
+.section-divider {
   width: 100%;
-  max-width: 620px;
-  overflow: hidden;
-  animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-subtle) 20%, var(--border-subtle) 80%, transparent);
+}
+
+/* ==========================================================================
+   SCROLLBAR
+   ========================================================================== */
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-medium); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* ==========================================================================
+   ANIMATIONS
+   ========================================================================== */
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes fadeIn {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
 }
 
-@keyframes modalPop {
-  from { opacity: 0; transform: scale(0.96) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-up    { animation: fadeUp  0.5s cubic-bezier(0.16,1,0.3,1) both; }
+.animate-fade-in    { animation: fadeIn  0.4s ease both; }
+.animate-scale-in   { animation: scaleIn 0.4s cubic-bezier(0.16,1,0.3,1) both; }
+
+/* Reduced-motion support */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ==========================================================================
-   Responsive Scaling
+   RESPONSIVE UTILITIES
    ========================================================================== */
 
 @media (max-width: 768px) {
-  .workspace-container {
-    padding: 0 1.25rem;
-  }
-
-  .editorial-hero {
-    font-size: 2.8rem;
-  }
-
-  .editorial-pullquote {
-    font-size: 1.4rem;
-  }
+  .workspace-container { padding: 0 1rem; }
+  .editorial-hero      { font-size: clamp(2.5rem, 12vw, 4rem); }
 }
