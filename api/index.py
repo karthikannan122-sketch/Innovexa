@@ -1,10 +1,7 @@
-"""
-Root Vercel Serverless Function Entry Point for INNOVEXA Backend API
-Exposes the FastAPI 'app' ASGI handler for Vercel Python Runtime.
-"""
-import sys
 import os
+import sys
 
+# Ensure repository root and backend directory are in python sys.path
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 backend_dir = os.path.join(root_dir, "backend")
 
@@ -18,4 +15,6 @@ try:
 except ImportError:
     from app.main import app
 
-__all__ = ["app"]
+# Explicit top-level bindings for Vercel Python Serverless handler detection
+handler = app
+application = app
